@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Franktech Payment</title>
+  <script src="https://www.paypal.com/sdk/js?client-id=AYuQKvqCi_dydU1ibaAXQS5HfoNXwdsseMl_NWLhK1t5gDuhHOvzn9zxPZs2muMX5OGPdb7JFyh1ANf0&currency=USD"></script>
+</head>
+<body>
+
+  <h2>Pay with PayPal</h2>
+
+  <div id="paypal-button-container"></div>
+
+  <script>
+paypal.Buttons({
+
+    createOrder: function(data, actions) {
+        return fetch('/api/payment/create', {
+            method: 'POST'
+        })
+        .then(res => res.json())
+        .then(order => order.orderID);
+    },
+
+    onApprove: function(data, actions) {
+        return fetch(`/api/payment/capture/${data.orderID}`, {   // ✅ FIXED
+            method: 'POST'
+        })
+        .then(res => res.json())
+        .then(result => {
+            if (result.error) {
+                alert("❌ Payment failed: " + result.error);
+            } else {
+                alert("✅ Payment successful! Wallet updated.");
+            }
+        });
+    },
+
+    onError: function(err) {
+        console.error(err);
+        alert("❌ Payment could not be completed.");
+    }
+
+}).render('#paypal-button-container');
+</script>
+
+</body>
+</html>

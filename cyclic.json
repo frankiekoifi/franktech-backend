@@ -1,0 +1,12 @@
+﻿{
+  "projectId": "franktech-backend",
+  "appName": "franktech-backend",
+  "branch": "main",
+  "framework": "node",
+  "installCommand": "npm install",
+  "startCommand": "npm start",
+  "outputDir": ".",
+  "env": {
+    "NODE_ENV": "production"
+  }
+}
