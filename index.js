@@ -8,100 +8,123 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const helmet = require('helmet');
 
-// Enhanced CORS configuration for ngrok and local development
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, postman)
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'https://honourably-charitable-alvina.ngrok-free.dev',
-      /^https?:\/\/.*\.ngrok-free\.dev$/,
-      'http://localhost:64039',
-      'http://localhost:3000',
-      'http://localhost:5000',
-      'http://127.0.0.1:64039',
-      'http://127.0.0.1:5000',
-      'http://0.0.0.0:5000'
-    ];
-    
-    if (allowedOrigins.some(allowed => {
-      if (typeof allowed === 'string') {
-        return origin === allowed;
-      } else if (allowed instanceof RegExp) {
-        return allowed.test(origin);
-      }
-      return false;
-    })) {
-      callback(null, true);
-    } else {
-      console.log(`CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+// ========== BULLETPROOF CORS FIX ==========
+// This will allow ALL Flutter development origins
+const cors = require('cors');
+
+// Simple CORS - allow everything for now
+app.use(cors({
+  origin: true,  // Allow ALL origins
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-  exposedHeaders: ['Content-Length', 'X-Request-Id'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+  exposedHeaders: ['Authorization'],
   maxAge: 86400
-};
-if (process.env.NODE_ENV === 'production') {
-  app.use(helmet()); // Security headers
-  app.set('trust proxy', 1); // Trust proxy for rate limiting
+}));
+
+// Handle preflight explicitly
+app.options('*', cors());
+
+// Manual logging middleware to see what's happening
+app.use((req, res, next) => {
+  const origin = req.headers.origin || 'none';
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  console.log(`   Origin: ${origin}`);
+  console.log(`   User-Agent: ${req.headers['user-agent']?.substring(0, 50) || 'unknown'}...`);
   
-  // Rate limiting for production
+  // Manually set CORS headers as backup
+  if (origin !== 'none') {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Origin, X-Requested-With');
+  }
+  
+  // Handle OPTIONS preflight
+  if (req.method === 'OPTIONS') {
+    console.log('✅ Handling OPTIONS preflight');
+    return res.status(200).end();
+  }
+  
+  next();
+});
+
+// ========== SECURITY & MIDDLEWARE ==========
+if (process.env.NODE_ENV === 'production') {
+  app.use(helmet({
+    // Configure helmet to work with your frontend
+    contentSecurityPolicy: false, // You can configure this later
+    crossOriginResourcePolicy: { policy: "cross-origin" }
+  }));
+  app.set('trust proxy', 1);
+  
   const limiter = require('express-rate-limit')({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100 // limit each IP to 100 requests per windowMs
+    windowMs: 15 * 60 * 1000,
+    max: 100
   });
   app.use('/api/', limiter);
 }
 
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+  console.log(`\n${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
   console.log(`   From: ${req.ip} | Origin: ${req.headers.origin || 'none'}`);
+  console.log(`   User-Agent: ${req.headers['user-agent'] || 'unknown'}`);
   next();
 });
 
-console.log('Starting Franktech Backend...');
-console.log(`Root directory: ${__dirname}`);
-console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-console.log(`MPESA_CALLBACK_URL: ${process.env.MPESA_CALLBACK_URL}`);
+console.log('🚀 Starting Franktech Backend...');
+console.log(`📁 Root: ${__dirname}`);
+console.log(`⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`🔒 CORS: ALL origins allowed`);
 
-// Route loading
+// ========== DEBUG ENDPOINT ==========
+app.get('/api/debug', (req, res) => {
+  res.json({
+    message: 'Debug endpoint working',
+    yourOrigin: req.headers.origin || 'none',
+    yourIP: req.ip,
+    headers: req.headers,
+    cors: 'ENABLED - All origins allowed',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.options('/api/debug', (req, res) => {
+  res.status(200).end();
+});
+
+// ========== ROUTE LOADING ==========
 const loadRoute = (routePath, routePrefix) => {
   try {
     const route = require(routePath);
     app.use(routePrefix, route);
-    console.log(`${routePrefix} routes loaded`);
+    console.log(`✅ ${routePrefix} routes loaded`);
     return true;
   } catch (error) {
-    console.error(`Failed to load ${routePrefix}: ${error.message}`);
+    console.error(`❌ Failed to load ${routePrefix}: ${error.message}`);
     return false;
   }
 };
 
-console.log('\nLoading routes...');
+console.log('\n📦 Loading routes...');
 loadRoute('./routes/auth', '/api/auth');
 loadRoute('./routes/wallet', '/api/wallet');
 loadRoute('./routes/game', '/api/games');
 loadRoute('./routes/tournament', '/api/tournaments');
 loadRoute('./routes/payment', '/api/payment');
 loadRoute('./routes/mpesa', '/api/mpesa');
-console.log('All routes loaded\n');
+console.log('✅ All routes loaded\n');
 
-// Static files
+// ========== STATIC FILES ==========
 app.use(express.static(path.join(__dirname, 'public')));
 
-// MongoDB connection
+// ========== DATABASE CONNECTION ==========
 if (process.env.MONGO_URI) {
-  console.log('Connecting to MongoDB...');
+  console.log('🔌 Connecting to MongoDB...');
   
   mongoose.set('strictQuery', true);
   
@@ -111,53 +134,32 @@ if (process.env.MONGO_URI) {
     family: 4
   })
   .then(() => {
-    console.log('MongoDB connected successfully');
+    console.log('✅ MongoDB connected successfully');
   })
   .catch(err => {
-    console.error('MongoDB connection failed:', err.message);
-    console.log('Server will continue without database');
+    console.error('❌ MongoDB connection failed:', err.message);
+    console.log('⚠️ Server will continue without database');
   });
 } else {
-  console.log('MONGO_URI not found in environment variables');
+  console.log('⚠️ MONGO_URI not found in environment variables');
 }
 
-// Health check endpoint
+// ========== API ENDPOINTS ==========
+
+// Health check with detailed CORS info
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     service: 'franktech-backend',
     version: '1.0.0',
-    environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-// Test endpoint
-app.get('/api/test', (req, res) => {
-  res.json({
-    message: 'Test endpoint working!',
-    serverTime: new Date().toISOString(),
-    ngrokUrl: 'https://honourably-charitable-alvina.ngrok-free.dev',
-    callbackUrl: process.env.MPESA_CALLBACK_URL || 'Not set'
-  });
-});
-
-// M-Pesa test endpoint
-app.get('/api/mpesa/test', (req, res) => {
-  res.json({
-    status: 'M-Pesa API Test',
-    environment: process.env.MPESA_ENVIRONMENT || 'Not set',
-    shortcode: process.env.MPESA_SHORTCODE || 'Not set',
-    callbackUrl: process.env.MPESA_CALLBACK_URL || 'Not set',
-    callbackConfigured: !!process.env.MPESA_CALLBACK_URL,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Welcome to Franktech Gaming Backend API',
+    environment: process.env.NODE_ENV || 'development',
+    cors: {
+      allowed: true,
+      yourOrigin: req.headers.origin || 'none',
+      credentials: true,
+      message: 'ALL origins allowed'
+    },
     endpoints: {
       auth: '/api/auth/*',
       wallet: '/api/wallet/*',
@@ -165,20 +167,84 @@ app.get('/', (req, res) => {
       tournaments: '/api/tournaments/*',
       payment: '/api/payment/*',
       mpesa: '/api/mpesa/*',
-      system: ['/api/health', '/api/test', '/']
-    },
-    serverInfo: {
-      port: PORT,
-      environment: process.env.NODE_ENV || 'development',
-      time: new Date().toISOString(),
-      ngrokUrl: 'https://honourably-charitable-alvina.ngrok-free.dev'
+      debug: '/api/debug'
     }
   });
 });
 
+// Enhanced CORS test endpoint
+app.get('/api/cors-test', (req, res) => {
+  res.json({
+    message: '🎉 CORS test successful!',
+    yourRequest: {
+      origin: req.headers.origin || 'No origin header',
+      method: req.method,
+      ip: req.ip
+    },
+    serverCors: {
+      status: 'ALL origins allowed',
+      credentials: true,
+      timestamp: new Date().toISOString()
+    },
+    note: 'If you can see this, CORS is working!'
+  });
+});
+
+// OPTIONS test endpoint
+app.options('/api/cors-test', (req, res) => {
+  console.log('✅ CORS test OPTIONS called from:', req.headers.origin);
+  res.status(200).json({ 
+    message: 'OPTIONS preflight OK',
+    corsConfigured: true 
+  });
+});
+
+// Flutter-specific test endpoint
+app.post('/api/flutter-test', (req, res) => {
+  console.log('📱 Flutter test request received');
+  res.json({
+    success: true,
+    message: 'Flutter connection successful!',
+    receivedData: req.body,
+    headers: req.headers,
+    cors: 'Working correctly',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.options('/api/flutter-test', (req, res) => {
+  res.status(200).end();
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Welcome to Franktech Gaming Backend API',
+    documentation: 'This API supports Flutter Web applications',
+    cors: 'ALL origins allowed for development',
+    timestamp: new Date().toISOString(),
+    testEndpoints: [
+      '/api/health',
+      '/api/cors-test',
+      '/api/debug',
+      '/api/flutter-test (POST)'
+    ],
+    apiEndpoints: {
+      auth: '/api/auth/*',
+      wallet: '/api/wallet/*',
+      games: '/api/games/*',
+      tournaments: '/api/tournaments/*',
+      payment: '/api/payment/*',
+      mpesa: '/api/mpesa/*'
+    }
+  });
+});
+
+// ========== ERROR HANDLING ==========
+
 // 404 handler
 app.use((req, res) => {
-  console.log(`404: Route not found: ${req.method} ${req.originalUrl}`);
+  console.log(`❌ 404: ${req.method} ${req.originalUrl}`);
   
   res.status(404).json({
     error: 'Not Found',
@@ -190,50 +256,55 @@ app.use((req, res) => {
       tournaments: '/api/tournaments/*',
       payment: '/api/payment/*',
       mpesa: '/api/mpesa/*',
-      system: ['/api/health', '/api/test', '/']
+      system: ['/api/health', '/api/cors-test', '/api/debug', '/api/flutter-test', '/']
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// Error handler
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error('Global Error Handler:');
+  console.error('\n🔥 Global Error Handler:');
   console.error(`   URL: ${req.method} ${req.originalUrl}`);
+  console.error(`   Origin: ${req.headers.origin || 'none'}`);
   console.error(`   Error: ${err.message}`);
   
   const errorResponse = {
     error: 'Internal Server Error',
     message: 'Something went wrong on the server',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    path: req.originalUrl
   };
   
   if (process.env.NODE_ENV !== 'production') {
     errorResponse.details = err.message;
+    errorResponse.stack = err.stack;
   }
   
   res.status(err.status || 500).json(errorResponse);
 });
 
-// Start server with all network interfaces
+// ========== START SERVER ==========
 const server = app.listen(PORT, '0.0.0.0', () => {
   const address = server.address();
   const host = address.address === '::' ? '0.0.0.0' : address.address;
   
-  console.log('\nServer is running!');
-  console.log(`Local: http://localhost:${PORT}`);
-  console.log(`Network: http://${host}:${PORT}`);
-  console.log(`External (ngrok): https://honourably-charitable-alvina.ngrok-free.dev`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Started: ${new Date().toLocaleTimeString()}`);
-  console.log('\nAvailable endpoints:');
-  console.log(`   Local: http://localhost:${PORT}/api/health`);
-  console.log(`   Network: http://${host}:${PORT}/api/health`);
-  console.log(`   Ngrok: https://honourably-charitable-alvina.ngrok-free.dev/api/health`);
-  console.log(`   Test: http://localhost:${PORT}/api/test`);
-  console.log(`   M-Pesa Test: http://localhost:${PORT}/api/mpesa/test`);
-  console.log('\nReady for requests!');
-  console.log('\nIMPORTANT FOR M-PESA:');
-  console.log(`   Make sure .env has: MPESA_CALLBACK_URL=https://honourably-charitable-alvina.ngrok-free.dev/api/mpesa/callback`);
-  console.log('');
+  console.log('\n' + '='.repeat(60));
+  console.log('🚀 FRANKTECH BACKEND SERVER STARTED');
+  console.log('='.repeat(60));
+  console.log(`📡 Local: http://localhost:${PORT}`);
+  console.log(`🌐 Network: http://${host}:${PORT}`);
+  console.log(`🔗 Render: https://franktech-backend.onrender.com`);
+  console.log(`⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔒 CORS: ALL origins allowed (Development Mode)`);
+  console.log(`📱 Flutter: ANY localhost or 127.0.0.1 port will work`);
+  console.log(`⏰ Started: ${new Date().toLocaleTimeString()}`);
+  console.log('='.repeat(60));
+  console.log('\n📋 Test endpoints:');
+  console.log(`   Health: https://franktech-backend.onrender.com/api/health`);
+  console.log(`   Debug: https://franktech-backend.onrender.com/api/debug`);
+  console.log(`   CORS Test: https://franktech-backend.onrender.com/api/cors-test`);
+  console.log(`   Flutter Test: POST to https://franktech-backend.onrender.com/api/flutter-test`);
+  console.log('\n✅ Ready for Flutter web requests!');
+  console.log('='.repeat(60) + '\n');
 });
