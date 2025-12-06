@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
-const cors = require('cors');
+const cors = require('cors'); // <-- KEEP THIS LINE ONLY ONCE
 const path = require('path');
 
 const app = express();
@@ -9,9 +9,6 @@ const PORT = process.env.PORT || 5000;
 const helmet = require('helmet');
 
 // ========== BULLETPROOF CORS FIX ==========
-// This will allow ALL Flutter development origins
-const cors = require('cors');
-
 // Simple CORS - allow everything for now
 app.use(cors({
   origin: true,  // Allow ALL origins
