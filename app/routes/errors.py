@@ -1,0 +1,407 @@
+﻿from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Request
+from typing import Optional
+from datetime import datetime
+import json
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc, func
+from app.database import get_db
+from app.models import Error, AIAnalysis, Project, APIKey
+from app.schemas import ErrorCreate, AIAnalysisResponse
+from app.services.ai_service import analyze_error
+from app.config import settings
+from app.utils.auth import get_current_user
+
+router = APIRouter(prefix="/api/v1/errors", tags=["errors"])
+
+async def validate_api_key(api_key: str, db: AsyncSession):
+    """Validate API key and return project"""
+    result = await db.execute(
+        select(APIKey).where(APIKey.key == api_key, APIKey.is_active == True)
+    )
+    api_key_obj = result.scalar_one_or_none()
+    
+    if not api_key_obj:
+        return None
+    
+    # Update last_used
+    api_key_obj.last_used = datetime.utcnow()
+    # Increment error count
+    api_key_obj.error_count = (api_key_obj.error_count or 0) + 1
+    await db.commit()
+    
+    # Get project
+    project_result = await db.execute(
+        select(Project).where(Project.id == api_key_obj.project_id)
+    )
+    return project_result.scalar_one_or_none()
+
+async def analyze_error_background(error_id: int, db: AsyncSession):
+    """Background task to analyze error with AI"""
+    try:
+        print(f"🔍 DEBUG: Starting analysis for error {error_id}")
+        print(f"🔍 DEBUG: AI enabled = {settings.ai_enabled}")
+        
+        # Get the error from database
+        result = await db.execute(
+            select(Error).where(Error.id == error_id)
+        )
+        error = result.scalar_one_or_none()
+        
+        if not error:
+            print(f"❌ Error {error_id} not found")
+            return
+        
+        # Convert to dict for AI service
+        error_dict = {
+            "id": error.id,
+            "type": error.type,
+            "message": error.message,
+            "stack_trace": error.stack_trace,
+            "severity": error.severity,
+            "url": error.url,
+            "environment": error.environment,
+            "user_id": error.user_id,
+            "user_email": error.user_email,
+            "extra_data": error.extra_data or {},
+        }
+        
+        # Run AI analysis
+        print(f"🔍 DEBUG: Calling analyze_error for error {error_id}")
+        analysis = await analyze_error(error_dict)
+        print(f"🔍 DEBUG: Analysis result: {analysis}")
+        
+        # Store analysis in database
+        ai_analysis = AIAnalysis(
+            error_id=error_id,
+            root_cause=analysis.get("root_cause"),
+            suggested_fix=analysis.get("suggested_fix"),
+            fix_explanation=analysis.get("fix_explanation"),
+            confidence=analysis.get("confidence", 0.0),
+            status="completed",
+            analyzed_at=datetime.utcnow()
+        )
+        db.add(ai_analysis)
+        
+        # Update error with has_ai_analysis flag
+        error.has_ai_analysis = True
+        
+        await db.commit()
+        print(f"✅ Analysis stored for error {error_id}")
+        
+    except Exception as e:
+        print(f"❌ Background analysis error: {e}")
+        import traceback
+        traceback.print_exc()
+        await db.rollback()
+        
+        # Store failed analysis
+        try:
+            ai_analysis = AIAnalysis(
+                error_id=error_id,
+                root_cause=f"Analysis failed: {str(e)}",
+                suggested_fix="Please try again or check AI provider configuration",
+                status="failed",
+                analyzed_at=datetime.utcnow()
+            )
+            db.add(ai_analysis)
+            await db.commit()
+        except Exception as inner_e:
+            print(f"❌ Failed to store failure: {inner_e}")
+
+@router.post("/")
+async def ingest_error(
+    error: ErrorCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    request: Request = None
+):
+    """Store error - accepts either JWT token or API key"""
+    try:
+        print(f"🔍 DEBUG: POST /api/v1/errors called")
+        print(f"🔍 DEBUG: AI Provider = {settings.ai_provider}")
+        print(f"🔍 DEBUG: AI enabled = {settings.ai_enabled}")
+        
+        project = None
+        user_id = None
+        auth_method = None
+        
+        # Check for API Key header (SDK)
+        api_key_header = request.headers.get("X-API-Key") if request else None
+        
+        if api_key_header:
+            print(f"🔍 DEBUG: API Key provided: {api_key_header[:20]}...")
+            project = await validate_api_key(api_key_header, db)
+            if project:
+                auth_method = "api_key"
+                print(f"🔑 Authenticated via API key for project: {project.id}")
+        
+        # If no project from API key, try Authorization header (JWT)
+        if not project:
+            auth_header = request.headers.get("Authorization") if request else None
+            if auth_header and auth_header.startswith("Bearer "):
+                token = auth_header.replace("Bearer ", "")
+                print(f"🔍 DEBUG: JWT token provided")
+                
+                try:
+                    user = await get_current_user(token, db)
+                    if user:
+                        # Get user's default project
+                        project_result = await db.execute(
+                            select(Project).where(Project.owner_id == user.id)
+                        )
+                        project = project_result.scalar_one_or_none()
+                        if not project:
+                            # Create default project
+                            project = Project(
+                                name="Default Project",
+                                slug="default-project",
+                                owner_id=user.id,
+                                created_at=datetime.utcnow()
+                            )
+                            db.add(project)
+                            await db.flush()
+                        user_id = user.id
+                        auth_method = "jwt"
+                        print(f"👤 Authenticated via JWT for user: {user.email}")
+                except Exception as e:
+                    print(f"⚠️ JWT validation failed: {e}")
+        
+        if not project:
+            print("❌ No valid authentication found")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid or missing authentication"
+            )
+        
+        # Create error
+        db_error = Error(
+            project_id=project.id,
+            type=error.type,
+            message=error.message,
+            stack_trace=error.stack_trace,
+            severity=error.severity,
+            url=error.url,
+            line_no=error.line_no,
+            col_no=error.col_no,
+            user_id=error.user_id,
+            user_email=error.user_email,
+            environment=error.environment or "production",
+            release_version=error.release_version,
+            extra_data=error.extra_data or {},
+            status="unresolved",
+            created_at=datetime.utcnow(),
+            has_ai_analysis=False
+        )
+        db.add(db_error)
+        await db.commit()
+        await db.refresh(db_error)
+        
+        print(f"✅ Error {db_error.id} stored in database")
+        
+        # Trigger AI analysis
+        if settings.ai_enabled:
+            print(f"🔍 DEBUG: Adding background task for error {db_error.id}")
+            background_tasks.add_task(analyze_error_background, db_error.id, db)
+        else:
+            print(f"⚠️ AI disabled, skipping analysis for error {db_error.id}")
+        
+        return {
+            "id": db_error.id,
+            "accepted": True,
+            "analyzing": settings.ai_enabled,
+            "message": "Error captured successfully",
+            "auth_method": auth_method,
+            "project_id": project.id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/")
+async def get_errors(
+    limit: int = 50,
+    offset: int = 0,
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Get all errors with filters"""
+    try:
+        # Build query
+        query = select(Error).where(Error.project_id.in_(
+            select(Project.id).where(Project.owner_id == current_user.id)
+        ))
+        
+        if severity:
+            query = query.where(Error.severity == severity)
+        
+        if status:
+            query = query.where(Error.status == status)
+        
+        # Order by created_at descending with pagination
+        query = query.order_by(desc(Error.created_at)).limit(limit).offset(offset)
+        
+        result = await db.execute(query)
+        errors = result.scalars().all()
+        
+        # Get total count
+        count_query = select(func.count()).select_from(Error).where(Error.project_id.in_(
+            select(Project.id).where(Project.owner_id == current_user.id)
+        ))
+        
+        if severity:
+            count_query = count_query.where(Error.severity == severity)
+        
+        if status:
+            count_query = count_query.where(Error.status == status)
+        
+        total_result = await db.execute(count_query)
+        total = total_result.scalar()
+        
+        # Convert to dict
+        result = []
+        for error in errors:
+            error_dict = {
+                "id": error.id,
+                "type": error.type,
+                "message": error.message,
+                "stack_trace": error.stack_trace,
+                "severity": error.severity,
+                "url": error.url,
+                "line_no": error.line_no,
+                "col_no": error.col_no,
+                "user_id": error.user_id,
+                "user_email": error.user_email,
+                "environment": error.environment,
+                "release_version": error.release_version,
+                "extra_data": error.extra_data or {},
+                "status": error.status,
+                "has_ai_analysis": error.has_ai_analysis,
+                "created_at": error.created_at,
+                "fixed_at": error.fixed_at
+            }
+            result.append(error_dict)
+        
+        return {
+            "errors": result,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{error_id}")
+async def get_error(
+    error_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Get a single error by ID"""
+    try:
+        # Get error with project check
+        result = await db.execute(
+            select(Error).where(Error.id == error_id).where(
+                Error.project_id.in_(
+                    select(Project.id).where(Project.owner_id == current_user.id)
+                )
+            )
+        )
+        error = result.scalar_one_or_none()
+        
+        if not error:
+            raise HTTPException(status_code=404, detail="Error not found")
+        
+        return {
+            "id": error.id,
+            "type": error.type,
+            "message": error.message,
+            "stack_trace": error.stack_trace,
+            "severity": error.severity,
+            "url": error.url,
+            "line_no": error.line_no,
+            "col_no": error.col_no,
+            "user_id": error.user_id,
+            "user_email": error.user_email,
+            "environment": error.environment,
+            "release_version": error.release_version,
+            "extra_data": error.extra_data or {},
+            "status": error.status,
+            "has_ai_analysis": error.has_ai_analysis,
+            "created_at": error.created_at,
+            "fixed_at": error.fixed_at
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{error_id}/analysis", response_model=AIAnalysisResponse)
+async def get_error_analysis(
+    error_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Get AI analysis for a specific error"""
+    try:
+        # First check if error exists and user has access
+        error_result = await db.execute(
+            select(Error).where(Error.id == error_id).where(
+                Error.project_id.in_(
+                    select(Project.id).where(Project.owner_id == current_user.id)
+                )
+            )
+        )
+        error = error_result.scalar_one_or_none()
+        
+        if not error:
+            raise HTTPException(status_code=404, detail="Error not found")
+        
+        # Get analysis
+        result = await db.execute(
+            select(AIAnalysis)
+            .where(AIAnalysis.error_id == error_id)
+            .order_by(desc(AIAnalysis.analyzed_at))
+            .limit(1)
+        )
+        analysis = result.scalar_one_or_none()
+        
+        if not analysis:
+            return {
+                "error_id": error_id,
+                "status": "pending",
+                "root_cause": None,
+                "suggested_fix": None,
+                "fix_explanation": None,
+                "confidence": None,
+                "analyzed_at": None
+            }
+        
+        return {
+            "error_id": analysis.error_id,
+            "root_cause": analysis.root_cause,
+            "suggested_fix": analysis.suggested_fix,
+            "fix_explanation": analysis.fix_explanation,
+            "confidence": analysis.confidence,
+            "analyzed_at": analysis.analyzed_at,
+            "status": analysis.status
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
