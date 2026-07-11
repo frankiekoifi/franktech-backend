@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Payment Success</title>
+</head>
+<body>
+  <h2>Processing your payment...</h2>
+  <script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get("token");
+
+    if (token) {
+      fetch("http://localhost:5000/api/payment/capture/" + token, {
+        method: "POST"
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === "COMPLETED") {
+          document.body.innerHTML = "<h2>Payment successful!</h2>";
+        } else {
+          document.body.innerHTML = "<h2>Payment failed or incomplete.</h2>";
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        document.body.innerHTML = "<h2>Error capturing payment.</h2>";
+      });
+    } else {
+      document.body.innerHTML = "<h2>Missing order token</h2>";
+    }
+  </script>
+</body>
+</html>

@@ -1,3 +1,5 @@
+# Create a clean .gitignore file
+@"
 # Python
 __pycache__/
 *.py[cod]
@@ -21,3 +23,8 @@ uvicorn.log
 
 # Alembic
 alembic/versions/*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+"@ | Out-File -FilePath .gitignore -Encoding utf8
