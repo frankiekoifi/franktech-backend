@@ -6,20 +6,17 @@ from app.database import engine, Base
 from app.config import settings
 from sqlalchemy import text
 
-# ✅ Import all models so Base.metadata knows about them
+# Import all models
 from app.models import User, Organization, Project, Error, AIAnalysis, APIKey
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Create tables if they don't exist
     print("🔍 Checking database connection...")
     try:
         async with engine.begin() as conn:
-            # Create tables
             await conn.run_sync(Base.metadata.create_all)
             print("✅ Database tables created/verified")
             
-            # Check if users table exists and has data
             try:
                 result = await conn.execute(text("SELECT COUNT(*) FROM users"))
                 count = result.scalar()
@@ -31,7 +28,6 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown: Close connections
     await engine.dispose()
     print("✅ Database connections closed")
 
@@ -42,13 +38,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+#  CORS middleware - Allow all Render domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://franktech-dashboard.onrender.com", 
+        "https://franktech-backend.onrender.com",    
+        "http://localhost:3000",                     
+        "http://localhost:8000",                     
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
 )
 
 # Include routers
