@@ -10,18 +10,21 @@ from sqlalchemy import text
 async def lifespan(app: FastAPI):
     # Startup: Create tables if they don't exist
     print("🔍 Checking database connection...")
-    async with engine.begin() as conn:
-        # Create tables
-        await conn.run_sync(Base.metadata.create_all)
-        print("✅ Database tables created/verified")
-        
-        # Check if users table exists and has data
-        try:
-            result = await conn.execute(text("SELECT COUNT(*) FROM users"))
-            count = result.scalar()
-            print(f"👥 Users in database: {count}")
-        except Exception as e:
-            print(f"⚠️ Users table check: {e}")
+    try:
+        async with engine.begin() as conn:
+            # Create tables
+            await conn.run_sync(Base.metadata.create_all)
+            print("✅ Database tables created/verified")
+            
+            # Check if users table exists and has data
+            try:
+                result = await conn.execute(text("SELECT COUNT(*) FROM users"))
+                count = result.scalar()
+                print(f"👥 Users in database: {count}")
+            except Exception as e:
+                print(f"⚠️ Users table check: {e}")
+    except Exception as e:
+        print(f"❌ Database connection error: {e}")
     
     yield
     

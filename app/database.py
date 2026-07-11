@@ -14,11 +14,15 @@ else:
     # Default to SQLite with async
     DATABASE_URL = "sqlite+aiosqlite:///./franktech.db"
 
-# Create engine
+print(f"📁 Database URL: {DATABASE_URL[:50]}...")
+
+# Create engine with proper configuration
 engine = create_async_engine(
     DATABASE_URL,
     echo=settings.DEBUG or False,
-    future=True
+    future=True,
+    pool_pre_ping=True,  # Check connection before using
+    pool_recycle=3600,   # Recycle connections every hour
 )
 
 # Create session factory
