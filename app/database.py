@@ -1,14 +1,17 @@
 ﻿from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base
 from app.config import settings
 import os
 
 # Determine database URL (SQLite or PostgreSQL)
 if settings.DATABASE_URL.startswith("postgresql://"):
-    # Convert to async format
+    # Convert to async format for PostgreSQL
     DATABASE_URL = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+elif settings.DATABASE_URL.startswith("sqlite:///"):
+    # Convert to async format for SQLite
+    DATABASE_URL = settings.DATABASE_URL.replace("sqlite:///", "sqlite+aiosqlite:///")
 else:
-    # SQLite with async
+    # Default to SQLite with async
     DATABASE_URL = "sqlite+aiosqlite:///./franktech.db"
 
 # Create engine
@@ -31,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
 Base = declarative_base()
 
 # Dependency to get DB session
-async def get_db() -> AsyncSession: # type: ignore
+async def get_db() -> AsyncSession:
     async with AsyncSessionLocal() as session:
         try:
             yield session
