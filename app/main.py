@@ -6,6 +6,9 @@ from app.database import engine, Base
 from app.config import settings
 from sqlalchemy import text
 
+# ✅ Import all models so Base.metadata knows about them
+from app.models import User, Organization, Project, Error, AIAnalysis, APIKey
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Create tables if they don't exist

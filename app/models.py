@@ -1,8 +1,7 @@
 ﻿from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, JSON
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.orm import relationship
 from datetime import datetime
-
-Base = declarative_base()
+from app.database import Base  
 
 # ============ SQLAlchemy Models ============
 
@@ -14,7 +13,6 @@ class Organization(Base):
     slug = Column(String(255), unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Relationships
     users = relationship("User", back_populates="organization")
     projects = relationship("Project", back_populates="organization")
 
@@ -30,7 +28,6 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Relationships
     organization = relationship("Organization", back_populates="users")
     projects = relationship("Project", back_populates="owner")
 
@@ -47,7 +44,6 @@ class Project(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     settings = Column(JSON, default={})
     
-    # Relationships - using string references
     organization = relationship("Organization", back_populates="projects")
     owner = relationship("User", back_populates="projects")
     errors = relationship("Error", back_populates="project")
@@ -66,7 +62,6 @@ class APIKey(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
     
-    # Relationships
     project = relationship("Project", back_populates="api_keys")
     errors = relationship("Error", back_populates="api_key")
 
@@ -76,7 +71,6 @@ class Error(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
-    # These are EXTERNAL user IDs from your app, not foreign keys to User table
     user_id = Column(String(255), nullable=True)
     user_email = Column(String(255), nullable=True)
     type = Column(String(255), nullable=True)
@@ -96,7 +90,6 @@ class Error(Base):
     fixed_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     
-    # Relationships
     project = relationship("Project", back_populates="errors")
     ai_analysis = relationship("AIAnalysis", back_populates="error", uselist=False)
     api_key_id = Column(Integer, ForeignKey("api_keys.id"), nullable=True)
@@ -117,5 +110,4 @@ class AIAnalysis(Base):
     analyzed_at = Column(DateTime, default=datetime.utcnow)
     fixed_at = Column(DateTime)
     
-    # Relationships
     error = relationship("Error", back_populates="ai_analysis")
