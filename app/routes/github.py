@@ -40,22 +40,49 @@ async def update_github_config(
 # ============ FOR YOUR CUSTOMERS ============
 
 @router.get("/auth")
-async def github_auth():
-    """Redirect to GitHub OAuth"""
+async def github_auth(
+    current_user: User = Depends(get_current_active_user)
+):
+    """Redirect to GitHub OAuth with user token in state"""
     if not settings.GITHUB_CLIENT_ID:
         raise HTTPException(status_code=400, detail="GitHub OAuth not configured")
     
+    # ✅ Store user ID in state so callback can identify the user
+    state = f"user_{current_user.id}"
+    
     redirect_uri = "https://franktech-api.franktechspace.dev/api/v1/github/callback"
-    auth_url = f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={redirect_uri}&scope=repo"
+    auth_url = f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={redirect_uri}&scope=repo&state={state}"
     return {"auth_url": auth_url}
 
 @router.get("/callback")
 async def github_callback(
     code: str,
+    state: str = None,  # Add state parameter to receive from GitHub
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    # Remove current_user dependency since we'll identify user from state
 ):
     """Handle GitHub OAuth callback"""
+    
+    # ✅ Extract user ID from state
+    user_id = None
+    if state and state.startswith("user_"):
+        try:
+            user_id = int(state.split("_")[1])
+        except (IndexError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid state parameter")
+    
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User identification failed")
+    
+    # Get the user from database
+    user_result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
     # Exchange code for token
     async with httpx.AsyncClient() as client:
         response = await client.post(
@@ -83,9 +110,9 @@ async def github_callback(
         # Get the first repo or let user choose
         first_repo = repos[0]["full_name"] if repos else None
         
-        # Save token and repo
-        current_user.github_token = token
-        current_user.github_repo = first_repo
+        # Save token and repo to the user we identified from state
+        user.github_token = token
+        user.github_repo = first_repo
         await db.commit()
         
         return {
