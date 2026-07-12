@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
@@ -10,8 +11,6 @@ from app.config import settings
 from app.services.github_service import github_service
 
 router = APIRouter(prefix="/api/v1/github", tags=["GitHub"])
-
-# ============ FOR YOU (Testing) ============
 
 @router.get("/config")
 async def get_github_config(
@@ -31,13 +30,17 @@ async def update_github_config(
     current_user: User = Depends(get_current_active_user)
 ):
     """Update GitHub configuration for the current user"""
-    # In production, you'd encrypt the token here
-    current_user.github_token = config.get("token")
-    current_user.github_repo = config.get("repo")
+    if config.get("token"):
+        current_user.github_token = config.get("token")
+    if config.get("repo"):
+        current_user.github_repo = config.get("repo")
     await db.commit()
-    return {"message": "GitHub configuration updated"}
-
-# ============ FOR YOUR CUSTOMERS ============
+    return {
+        "message": "GitHub configuration updated",
+        "configured": bool(current_user.github_token and current_user.github_repo),
+        "repo": current_user.github_repo,
+        "has_token": bool(current_user.github_token)
+    }
 
 @router.get("/auth")
 async def github_auth(
@@ -47,9 +50,7 @@ async def github_auth(
     if not settings.GITHUB_CLIENT_ID:
         raise HTTPException(status_code=400, detail="GitHub OAuth not configured")
     
-    # ✅ Store user ID in state so callback can identify the user
     state = f"user_{current_user.id}"
-    
     redirect_uri = "https://franktech-api.franktechspace.dev/api/v1/github/callback"
     auth_url = f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={redirect_uri}&scope=repo&state={state}"
     return {"auth_url": auth_url}
@@ -57,68 +58,77 @@ async def github_auth(
 @router.get("/callback")
 async def github_callback(
     code: str,
-    state: str = None,  # Add state parameter to receive from GitHub
+    state: str = None,
     db: AsyncSession = Depends(get_db),
-    # Remove current_user dependency since we'll identify user from state
 ):
-    """Handle GitHub OAuth callback"""
-    
-    # ✅ Extract user ID from state
-    user_id = None
-    if state and state.startswith("user_"):
-        try:
-            user_id = int(state.split("_")[1])
-        except (IndexError, ValueError):
-            raise HTTPException(status_code=400, detail="Invalid state parameter")
-    
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User identification failed")
-    
-    # Get the user from database
-    user_result = await db.execute(
-        select(User).where(User.id == user_id)
-    )
-    user = user_result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Exchange code for token
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://github.com/login/oauth/access_token",
-            headers={"Accept": "application/json"},
-            json={
-                "client_id": settings.GITHUB_CLIENT_ID,
-                "client_secret": settings.GITHUB_CLIENT_SECRET,
-                "code": code,
-            }
+    """Handle GitHub OAuth callback - redirects back to dashboard"""
+    try:
+        # Extract user ID from state
+        user_id = None
+        if state and state.startswith("user_"):
+            try:
+                user_id = int(state.split("_")[1])
+            except (IndexError, ValueError):
+                pass
+        
+        if not user_id:
+            return RedirectResponse(
+                url="https://monitor.franktechspace.dev/settings?error=github_invalid_state"
+            )
+        
+        # Get the user from database
+        user_result = await db.execute(
+            select(User).where(User.id == user_id)
         )
-        data = response.json()
-        token = data.get("access_token")
+        user = user_result.scalar_one_or_none()
         
-        if not token:
-            raise HTTPException(status_code=400, detail="Failed to get token")
+        if not user:
+            return RedirectResponse(
+                url="https://monitor.franktechspace.dev/settings?error=github_user_not_found"
+            )
         
-        # Get user's repos to find default
-        repos_response = await client.get(
-            "https://api.github.com/user/repos",
-            headers={"Authorization": f"token {token}"}
+        # Exchange code for token
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                headers={"Accept": "application/json"},
+                json={
+                    "client_id": settings.GITHUB_CLIENT_ID,
+                    "client_secret": settings.GITHUB_CLIENT_SECRET,
+                    "code": code,
+                }
+            )
+            data = response.json()
+            token = data.get("access_token")
+            
+            if not token:
+                return RedirectResponse(
+                    url="https://monitor.franktechspace.dev/settings?error=github_token_failed"
+                )
+            
+            # Get user's repos
+            repos_response = await client.get(
+                "https://api.github.com/user/repos",
+                headers={"Authorization": f"token {token}"}
+            )
+            repos = repos_response.json()
+            first_repo = repos[0]["full_name"] if repos else None
+            
+            # Save token and repo
+            user.github_token = token
+            user.github_repo = first_repo
+            await db.commit()
+            
+            # ✅ Redirect back to dashboard settings with success
+            return RedirectResponse(
+                url="https://monitor.franktechspace.dev/settings?github=connected"
+            )
+            
+    except Exception as e:
+        print(f"❌ GitHub callback error: {e}")
+        return RedirectResponse(
+            url="https://monitor.franktechspace.dev/settings?error=github_failed"
         )
-        repos = repos_response.json()
-        
-        # Get the first repo or let user choose
-        first_repo = repos[0]["full_name"] if repos else None
-        
-        # Save token and repo to the user we identified from state
-        user.github_token = token
-        user.github_repo = first_repo
-        await db.commit()
-        
-        return {
-            "message": "GitHub connected successfully",
-            "repo": first_repo,
-        }
 
 @router.get("/repos")
 async def get_user_repos(
@@ -137,8 +147,6 @@ async def get_user_repos(
         repos = response.json()
         return [{"name": repo["full_name"], "default": repo["default_branch"]} for repo in repos]
 
-# ============ CREATE PR ============
-
 @router.post("/errors/{error_id}/create-pr")
 async def create_fix_pr(
     error_id: int,
@@ -147,7 +155,6 @@ async def create_fix_pr(
 ):
     """Create a GitHub PR with the AI-generated fix"""
     
-    # Check if user has GitHub configured
     if not current_user.github_token:
         raise HTTPException(
             status_code=400,
@@ -199,7 +206,7 @@ async def create_fix_pr(
     # Create PR using user's token
     result = await github_service.create_fix_pr(
         repo=current_user.github_repo,
-        token=current_user.github_token,  # User's token
+        token=current_user.github_token,
         error={
             "id": error.id,
             "type": error.type,
