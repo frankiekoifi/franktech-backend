@@ -27,6 +27,8 @@ class User(Base):
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    github_token = Column(String(500), nullable=True)
+    github_repo = Column(String(255), nullable=True)
     
     organization = relationship("Organization", back_populates="users")
     projects = relationship("Project", back_populates="owner")

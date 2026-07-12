@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    GITHUB_CLIENT_ID: str = os.getenv("GITHUB_CLIENT_ID", "")
+    GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
+    GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
+    GITHUB_REPO: str = os.getenv("GITHUB_REPO", "")
     
     model_config = ConfigDict(extra="ignore")
     
