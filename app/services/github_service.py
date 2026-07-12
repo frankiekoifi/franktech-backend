@@ -224,7 +224,8 @@ class GitHubService:
         }
         
         # Generate branch name
-        branch_name = f"fix/franktech-{error.get('id', 'error')[:8]}"
+        error_id = str(error.get('id', 'error'))
+        branch_name = f"fix/franktech-{error_id[:8]}"
         
         # Build PR title
         title = f"Fix: {error.get('type', 'Error')} - {error.get('message', '')[:50]}"
