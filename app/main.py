@@ -41,11 +41,16 @@ app = FastAPI(
 #  CORS middleware - Allow all Render domains
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://franktech-dashboard.onrender.com", 
-        "https://franktech-backend.onrender.com",    
-        "http://localhost:3000",                     
-        "http://localhost:8000",                     
+     allow_origins=[
+        "https://monitor.franktechspace.dev",
+        "https://franktech-api.franktechspace.dev",
+
+        "https://franktech-dashboard.onrender.com",
+        "https://franktech-backend.onrender.com",
+
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8000",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
