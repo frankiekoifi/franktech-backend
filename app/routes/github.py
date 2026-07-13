@@ -4,11 +4,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
 import json
+import logging
 from app.database import get_db
 from app.models import User, Error, AIAnalysis, Project
 from app.utils.auth import get_current_active_user
 from app.config import settings
 from app.services.github_service import github_service
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/github", tags=["GitHub"])
 
@@ -59,11 +63,28 @@ async def github_auth(
 ):
     """Redirect to GitHub OAuth with user token in state"""
     if not settings.GITHUB_CLIENT_ID:
+        logger.error("GITHUB_CLIENT_ID not configured")
+        raise HTTPException(status_code=400, detail="GitHub OAuth not configured")
+    
+    if not settings.GITHUB_CLIENT_SECRET:
+        logger.error("GITHUB_CLIENT_SECRET not configured")
         raise HTTPException(status_code=400, detail="GitHub OAuth not configured")
     
     state = f"user_{current_user.id}"
     redirect_uri = "https://franktech-api.franktechspace.dev/api/v1/github/callback"
-    auth_url = f"https://github.com/login/oauth/authorize?client_id={settings.GITHUB_CLIENT_ID}&redirect_uri={redirect_uri}&scope=repo&state={state}"
+    
+    # ✅ Build the complete auth URL with all parameters
+    auth_url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={settings.GITHUB_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope=repo"
+        f"&state={state}"
+    )
+    
+    logger.info(f"🔑 Generated OAuth URL for user {current_user.id}")
+    logger.info(f"🔑 Redirect URI: {redirect_uri}")
+    
     return {"auth_url": auth_url}
 
 @router.get("/callback")
@@ -74,14 +95,19 @@ async def github_callback(
 ):
     """Handle GitHub OAuth callback - redirects back to dashboard"""
     try:
+        logger.info(f"📥 OAuth callback received with state: {state}")
+        
         user_id = None
         if state and state.startswith("user_"):
             try:
                 user_id = int(state.split("_")[1])
-            except (IndexError, ValueError):
+                logger.info(f"👤 Extracted user ID: {user_id}")
+            except (IndexError, ValueError) as e:
+                logger.error(f"❌ Failed to parse state: {e}")
                 pass
         
         if not user_id:
+            logger.error("❌ No user_id found in state")
             return RedirectResponse(
                 url="https://monitor.franktechspace.dev/settings?error=github_invalid_state"
             )
@@ -92,11 +118,16 @@ async def github_callback(
         user = user_result.scalar_one_or_none()
         
         if not user:
+            logger.error(f"❌ User {user_id} not found")
             return RedirectResponse(
                 url="https://monitor.franktechspace.dev/settings?error=github_user_not_found"
             )
         
+        logger.info(f"👤 Found user: {user.email}")
+        
         async with httpx.AsyncClient() as client:
+            # Exchange code for token
+            logger.info("🔄 Exchanging code for token...")
             response = await client.post(
                 "https://github.com/login/oauth/access_token",
                 headers={"Accept": "application/json"},
@@ -106,33 +137,52 @@ async def github_callback(
                     "code": code,
                 }
             )
-            data = response.json()
-            token = data.get("access_token")
             
-            if not token:
+            if response.status_code != 200:
+                logger.error(f"❌ Failed to get token: {response.status_code} - {response.text}")
                 return RedirectResponse(
                     url="https://monitor.franktechspace.dev/settings?error=github_token_failed"
                 )
             
+            data = response.json()
+            token = data.get("access_token")
+            
+            if not token:
+                logger.error("❌ No access_token in response")
+                return RedirectResponse(
+                    url="https://monitor.franktechspace.dev/settings?error=github_token_failed"
+                )
+            
+            logger.info("✅ Access token received")
+            
+            # Get user's repos
+            logger.info("🔄 Fetching user repositories...")
             repos_response = await client.get(
                 "https://api.github.com/user/repos",
                 headers={"Authorization": f"token {token}"}
             )
-            repos = repos_response.json()
-            first_repo = repos[0]["full_name"] if repos else None
             
+            if repos_response.status_code != 200:
+                logger.error(f"❌ Failed to fetch repos: {repos_response.status_code}")
+                first_repo = None
+            else:
+                repos = repos_response.json()
+                first_repo = repos[0]["full_name"] if repos else None
+                logger.info(f"📁 Found {len(repos)} repositories, first: {first_repo}")
+            
+            # Save token and repo
             user.github_token = token
             user.github_repo = first_repo
             await db.commit()
             
-            print(f"✅ GitHub token saved for user: {user.email}")
+            logger.info(f"✅ GitHub token saved for user: {user.email}")
             
             return RedirectResponse(
                 url="https://monitor.franktechspace.dev/settings?github=connected"
             )
             
     except Exception as e:
-        print(f"❌ GitHub callback error: {e}")
+        logger.error(f"❌ GitHub callback error: {e}", exc_info=True)
         return RedirectResponse(
             url="https://monitor.franktechspace.dev/settings?error=github_failed"
         )
@@ -237,7 +287,7 @@ async def create_fix_pr(
         }
     else:
         error_msg = result.get('error', 'Unknown error')
-        print(f"❌ Failed to create PR: {error_msg}")
+        logger.error(f"❌ Failed to create PR: {error_msg}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create PR: {error_msg}"
