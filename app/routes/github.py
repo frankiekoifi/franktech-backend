@@ -24,7 +24,27 @@ async def get_status(current_user: User = Depends(get_current_active_user)):
         "connected_at": current_user.github_connected_at
     }
 
-# ============ CONNECT (OAuth Flow) ============
+# ============ AUTH - Returns OAuth URL (for frontend) ============
+@router.get("/auth")
+async def github_auth(current_user: User = Depends(get_current_active_user)):
+    """Return GitHub OAuth URL"""
+    if not settings.GITHUB_CLIENT_ID:
+        raise HTTPException(status_code=400, detail="GitHub OAuth not configured")
+    
+    redirect_uri = "https://franktech-api.franktechspace.dev/api/v1/github/callback"
+    state = f"user_{current_user.id}"
+    
+    auth_url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={settings.GITHUB_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope=repo"
+        f"&state={state}"
+    )
+    
+    return {"auth_url": auth_url}
+
+# ============ CONNECT (Direct Redirect) ============
 @router.get("/connect")
 async def github_connect(current_user: User = Depends(get_current_active_user)):
     """Initiate GitHub OAuth - redirects to GitHub"""
