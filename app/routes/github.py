@@ -30,15 +30,26 @@ async def update_github_config(
     current_user: User = Depends(get_current_active_user)
 ):
     """Update GitHub configuration for the current user"""
-    if config.get("token"):
-        current_user.github_token = config.get("token")
-    if config.get("repo"):
-        current_user.github_repo = config.get("repo")
+    
+    token_value = config.get("token")
+    if token_value and token_value.strip():
+        current_user.github_token = token_value
+    else:
+        current_user.github_token = None
+    
+    repo_value = config.get("repo")
+    if repo_value and repo_value.strip():
+        current_user.github_repo = repo_value
+    else:
+        current_user.github_repo = None
+    
     await db.commit()
+    await db.refresh(current_user)
+    
     return {
         "message": "GitHub configuration updated",
         "configured": bool(current_user.github_token and current_user.github_repo),
-        "repo": current_user.github_repo,
+        "repo": current_user.github_repo or "Not configured",
         "has_token": bool(current_user.github_token)
     }
 
@@ -63,7 +74,6 @@ async def github_callback(
 ):
     """Handle GitHub OAuth callback - redirects back to dashboard"""
     try:
-        # Extract user ID from state
         user_id = None
         if state and state.startswith("user_"):
             try:
@@ -76,7 +86,6 @@ async def github_callback(
                 url="https://monitor.franktechspace.dev/settings?error=github_invalid_state"
             )
         
-        # Get the user from database
         user_result = await db.execute(
             select(User).where(User.id == user_id)
         )
@@ -87,7 +96,6 @@ async def github_callback(
                 url="https://monitor.franktechspace.dev/settings?error=github_user_not_found"
             )
         
-        # Exchange code for token
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://github.com/login/oauth/access_token",
@@ -106,7 +114,6 @@ async def github_callback(
                     url="https://monitor.franktechspace.dev/settings?error=github_token_failed"
                 )
             
-            # Get user's repos
             repos_response = await client.get(
                 "https://api.github.com/user/repos",
                 headers={"Authorization": f"token {token}"}
@@ -114,14 +121,12 @@ async def github_callback(
             repos = repos_response.json()
             first_repo = repos[0]["full_name"] if repos else None
             
-            # Save token and repo to user
             user.github_token = token
             user.github_repo = first_repo
             await db.commit()
             
             print(f"✅ GitHub token saved for user: {user.email}")
             
-            # Redirect back to dashboard settings with success
             return RedirectResponse(
                 url="https://monitor.franktechspace.dev/settings?github=connected"
             )
@@ -172,7 +177,6 @@ async def create_fix_pr(
             detail="GitHub repo not configured. Please select a repo in Settings."
         )
     
-    # Get error and analysis
     error_result = await db.execute(
         select(Error).where(
             Error.id == error_id,
@@ -186,7 +190,6 @@ async def create_fix_pr(
     if not error:
         raise HTTPException(status_code=404, detail="Error not found")
     
-    # Get AI analysis
     analysis_result = await db.execute(
         select(AIAnalysis)
         .where(AIAnalysis.error_id == error_id)
@@ -208,7 +211,6 @@ async def create_fix_pr(
             "message": "PR already exists for this error"
         }
     
-    # Create PR using user's token
     result = await github_service.create_fix_pr(
         repo=current_user.github_repo,
         token=current_user.github_token,
