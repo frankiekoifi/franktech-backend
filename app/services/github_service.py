@@ -8,7 +8,6 @@ class GitHubService:
         self.api_url = "https://api.github.com"
         self.headers = {}
         
-        # Check for GitHub token
         if settings.GITHUB_TOKEN:
             self.headers = {
                 "Authorization": f"token {settings.GITHUB_TOKEN}",
@@ -17,70 +16,6 @@ class GitHubService:
         else:
             print("⚠️ GITHUB_TOKEN not set. GitHub features disabled.")
 
-    async def create_pull_request(
-        self,
-        repo: str,
-        token: str,
-        title: str,
-        body: str,
-        head_branch: str,
-        base_branch: str = "main",
-        file_changes: list = None,
-    ) -> dict:
-        """
-        Create a pull request with file changes
-        
-        Args:
-            repo: GitHub repo in format "owner/repo"
-            token: User's GitHub token for authentication
-            title: PR title
-            body: PR description
-            head_branch: Branch name with changes
-            base_branch: Target branch (main/master)
-            file_changes: List of dicts with {"path": "file.py", "content": "new content"}
-        """
-        if not token:
-            return {"error": "GitHub token not provided", "success": False}
-        
-        # Use the token passed in (user's token)
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        
-        owner, repo_name = repo.split("/")
-        
-        # 1. Get the default branch SHA
-        repo_info = await self._get_repo_info(owner, repo_name, headers)
-        base_sha = repo_info["default_branch_sha"]
-        
-        # 2. Create a new branch
-        branch_ref = await self._create_branch(
-            owner, repo_name, head_branch, base_sha, headers
-        )
-        if not branch_ref:
-            return {"error": "Failed to create branch", "success": False}
-        
-        # 3. Commit file changes
-        if file_changes:
-            commit = await self._create_commit(
-                owner, repo_name, head_branch, file_changes, title, headers
-            )
-            if not commit:
-                return {"error": "Failed to commit changes", "success": False}
-        
-        # 4. Create pull request
-        pr = await self._create_pr(
-            owner, repo_name, title, body, head_branch, base_branch, headers
-        )
-        
-        return {
-            "success": True,
-            "pr_url": pr.get("html_url"),
-            "pr_number": pr.get("number"),
-            "branch": head_branch,
-        }
-
     async def _get_repo_info(self, owner: str, repo: str, headers: dict) -> dict:
         """Get repository information"""
         async with httpx.AsyncClient() as client:
@@ -88,19 +23,23 @@ class GitHubService:
                 f"{self.api_url}/repos/{owner}/{repo}",
                 headers=headers
             )
-            if response.status_code == 200:
-                data = response.json()
-                default_branch = data.get("default_branch", "main")
-                branch_response = await client.get(
-                    f"{self.api_url}/repos/{owner}/{repo}/git/refs/heads/{default_branch}",
-                    headers=headers
-                )
-                branch_data = branch_response.json()
-                return {
-                    "default_branch": default_branch,
-                    "default_branch_sha": branch_data["object"]["sha"],
-                }
-            return {"error": "Failed to get repo info"}
+            if response.status_code != 200:
+                return {"error": f"Failed to get repo info: {response.status_code}"}
+            
+            data = response.json()
+            default_branch = data.get("default_branch", "main")
+            branch_response = await client.get(
+                f"{self.api_url}/repos/{owner}/{repo}/git/refs/heads/{default_branch}",
+                headers=headers
+            )
+            if branch_response.status_code != 200:
+                return {"error": f"Failed to get branch info: {branch_response.status_code}"}
+            
+            branch_data = branch_response.json()
+            return {
+                "default_branch": default_branch,
+                "default_branch_sha": branch_data["object"]["sha"],
+            }
 
     async def _create_branch(self, owner: str, repo: str, branch_name: str, base_sha: str, headers: dict) -> bool:
         """Create a new branch"""
@@ -117,7 +56,6 @@ class GitHubService:
 
     async def _create_commit(self, owner: str, repo: str, branch: str, file_changes: list, message: str, headers: dict) -> bool:
         """Create a commit with file changes"""
-        # Get current tree
         async with httpx.AsyncClient() as client:
             ref_response = await client.get(
                 f"{self.api_url}/repos/{owner}/{repo}/git/refs/heads/{branch}",
@@ -128,10 +66,8 @@ class GitHubService:
             
             current_sha = ref_response.json()["object"]["sha"]
             
-            # Create blobs for each file
             tree_items = []
             for change in file_changes:
-                # Create blob
                 blob_response = await client.post(
                     f"{self.api_url}/repos/{owner}/{repo}/git/blobs",
                     headers=headers,
@@ -150,7 +86,6 @@ class GitHubService:
                     "sha": blob_response.json()["sha"]
                 })
             
-            # Create tree
             tree_response = await client.post(
                 f"{self.api_url}/repos/{owner}/{repo}/git/trees",
                 headers=headers,
@@ -164,7 +99,6 @@ class GitHubService:
             
             tree_sha = tree_response.json()["sha"]
             
-            # Create commit
             commit_response = await client.post(
                 f"{self.api_url}/repos/{owner}/{repo}/git/commits",
                 headers=headers,
@@ -179,7 +113,6 @@ class GitHubService:
             
             commit_sha = commit_response.json()["sha"]
             
-            # Update branch reference
             update_response = await client.patch(
                 f"{self.api_url}/repos/{owner}/{repo}/git/refs/heads/{branch}",
                 headers=headers,
@@ -204,33 +137,79 @@ class GitHubService:
                 return response.json()
             return {"error": "Failed to create PR", "status_code": response.status_code}
 
+    async def create_pull_request(
+        self,
+        repo: str,
+        token: str,
+        title: str,
+        body: str,
+        head_branch: str,
+        base_branch: str = "main",
+        file_changes: list = None,
+    ) -> dict:
+        """Create a pull request with file changes"""
+        if not token:
+            return {"error": "GitHub token not provided", "success": False}
+        
+        owner, repo_name = repo.split("/")
+        
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        repo_info = await self._get_repo_info(owner, repo_name, headers)
+        if repo_info.get("error"):
+            return {"error": repo_info["error"], "success": False}
+        
+        base_sha = repo_info["default_branch_sha"]
+        
+        branch_ref = await self._create_branch(
+            owner, repo_name, head_branch, base_sha, headers
+        )
+        if not branch_ref:
+            return {"error": "Failed to create branch", "success": False}
+        
+        if file_changes:
+            commit = await self._create_commit(
+                owner, repo_name, head_branch, file_changes, title, headers
+            )
+            if not commit:
+                return {"error": "Failed to commit changes", "success": False}
+        
+        pr = await self._create_pr(
+            owner, repo_name, title, body, head_branch, base_branch, headers
+        )
+        
+        if pr.get("error"):
+            return {"error": pr["error"], "success": False}
+        
+        return {
+            "success": True,
+            "pr_url": pr.get("html_url"),
+            "pr_number": pr.get("number"),
+            "branch": head_branch,
+        }
+
     async def create_fix_pr(
         self,
         repo: str,
-        token: str,  
+        token: str,
         error: dict,
         analysis: dict,
         code_file: Optional[str] = None,
         code_content: Optional[str] = None,
         fix_content: Optional[str] = None,
     ) -> dict:
-        """
-        Create a PR with an AI-generated fix using user's token
-        """
-        # Use the token passed in (user's token)
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json"
-        }
+        """Create a PR with an AI-generated fix"""
+        # Silence unused parameters (kept for future use)
+        _ = code_content
         
-        # Generate branch name
         error_id = str(error.get('id', 'error'))
         branch_name = f"fix/franktech-{error_id[:8]}"
         
-        # Build PR title
         title = f"Fix: {error.get('type', 'Error')} - {error.get('message', '')[:50]}"
         
-        # Build PR body
         body = f"""
 ## 🤖 AI-Generated Fix
 
@@ -247,7 +226,6 @@ class GitHubService:
 *Review it carefully before merging.*
 """
         
-        # Prepare file changes
         file_changes = []
         if code_file and fix_content:
             file_changes.append({
@@ -255,16 +233,24 @@ class GitHubService:
                 "content": fix_content
             })
         
-        # Create PR
-        return await self.create_pull_request(
+        result = await self.create_pull_request(
             repo=repo,
-            token=token,  
+            token=token,
             title=title,
             body=body,
             head_branch=branch_name,
             base_branch="main",
             file_changes=file_changes
         )
+        
+        if result.get("error"):
+            return result
+        
+        return {
+            "success": True,
+            "pr_url": result.get("pr_url"),
+            "pr_number": result.get("pr_number"),
+            "branch": branch_name,
+        }
 
-# Create singleton instance
 github_service = GitHubService()
