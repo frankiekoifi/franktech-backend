@@ -24,10 +24,10 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    
+    # GitHub OAuth settings only
     GITHUB_CLIENT_ID: str = os.getenv("GITHUB_CLIENT_ID", "")
     GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
-    GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
-    GITHUB_REPO: str = os.getenv("GITHUB_REPO", "")
     
     model_config = ConfigDict(extra="ignore")
     
@@ -56,4 +56,8 @@ else:
     print(f"🔑 OPENAI_API_KEY: {'✅ SET' if settings.OPENAI_API_KEY else '❌ NOT SET'}")
 print(f"🔐 SECRET_KEY: {'✅ SET' if settings.SECRET_KEY else '❌ NOT SET'}")
 print(f"🗄️  DATABASE_URL: {settings.DATABASE_URL}")
+if settings.GITHUB_CLIENT_ID:
+    print(f"🔑 GITHUB_CLIENT_ID: ✅ SET")
+else:
+    print(f"🔑 GITHUB_CLIENT_ID: ❌ NOT SET")
 print("=" * 60)

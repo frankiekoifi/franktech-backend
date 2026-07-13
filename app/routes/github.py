@@ -114,12 +114,14 @@ async def github_callback(
             repos = repos_response.json()
             first_repo = repos[0]["full_name"] if repos else None
             
-            # Save token and repo
+            # Save token and repo to user
             user.github_token = token
             user.github_repo = first_repo
             await db.commit()
             
-            # ✅ Redirect back to dashboard settings with success
+            print(f"✅ GitHub token saved for user: {user.email}")
+            
+            # Redirect back to dashboard settings with success
             return RedirectResponse(
                 url="https://monitor.franktechspace.dev/settings?github=connected"
             )
@@ -144,6 +146,9 @@ async def get_user_repos(
             "https://api.github.com/user/repos",
             headers={"Authorization": f"token {current_user.github_token}"}
         )
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch repositories")
+        
         repos = response.json()
         return [{"name": repo["full_name"], "default": repo["default_branch"]} for repo in repos]
 
@@ -229,7 +234,9 @@ async def create_fix_pr(
             "message": "PR created successfully"
         }
     else:
+        error_msg = result.get('error', 'Unknown error')
+        print(f"❌ Failed to create PR: {error_msg}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to create PR: {result.get('error', 'Unknown error')}"
+            detail=f"Failed to create PR: {error_msg}"
         )

@@ -6,15 +6,7 @@ from app.config import settings
 class GitHubService:
     def __init__(self):
         self.api_url = "https://api.github.com"
-        self.headers = {}
-        
-        if settings.GITHUB_TOKEN:
-            self.headers = {
-                "Authorization": f"token {settings.GITHUB_TOKEN}",
-                "Accept": "application/vnd.github.v3+json"
-            }
-        else:
-            print("⚠️ GITHUB_TOKEN not set. GitHub features disabled.")
+        print("🔧 GitHub Service initialized (using user tokens only)")
 
     async def _get_repo_info(self, owner: str, repo: str, headers: dict) -> dict:
         """Get repository information"""
@@ -52,6 +44,8 @@ class GitHubService:
                     "sha": base_sha
                 }
             )
+            if response.status_code != 201:
+                print(f"❌ Failed to create branch: {response.status_code} - {response.text}")
             return response.status_code == 201
 
     async def _create_commit(self, owner: str, repo: str, branch: str, file_changes: list, message: str, headers: dict) -> bool:
@@ -147,7 +141,7 @@ class GitHubService:
         base_branch: str = "main",
         file_changes: list = None,
     ) -> dict:
-        """Create a pull request with file changes"""
+        """Create a pull request with file changes using user's token"""
         if not token:
             return {"error": "GitHub token not provided", "success": False}
         
@@ -201,9 +195,9 @@ class GitHubService:
         code_content: Optional[str] = None,
         fix_content: Optional[str] = None,
     ) -> dict:
-        """Create a PR with an AI-generated fix"""
+        """Create a PR with an AI-generated fix using user's token"""
         # Silence unused parameters (kept for future use)
-        _ = code_content
+        _ = code_content, code_file, fix_content
         
         error_id = str(error.get('id', 'error'))
         branch_name = f"fix/franktech-{error_id[:8]}"
@@ -219,6 +213,7 @@ class GitHubService:
 **Confidence:** {int(analysis.get('confidence', 0) * 100)}%
 
 ### Suggested Fix
+
 {analysis.get('suggested_fix', 'No fix provided')}
 
 ---
