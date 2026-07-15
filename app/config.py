@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     # GitHub OAuth settings only
     GITHUB_CLIENT_ID: str = os.getenv("GITHUB_CLIENT_ID", "")
     GITHUB_CLIENT_SECRET: str = os.getenv("GITHUB_CLIENT_SECRET", "")
+    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "FrankTech <francisochieng700@gmail.com>")
     
     model_config = ConfigDict(extra="ignore")
     

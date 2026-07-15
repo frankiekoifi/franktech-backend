@@ -5,9 +5,10 @@ import json
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 from app.database import get_db
-from app.models import Error, AIAnalysis, Project, APIKey
+from app.models import Error, AIAnalysis, Project, APIKey, User
 from app.schemas import ErrorCreate, AIAnalysisResponse
 from app.services.ai_service import analyze_error
+from app.services.email_service import email_service
 from app.config import settings
 from app.utils.auth import get_current_user
 
@@ -87,6 +88,54 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
         
         await db.commit()
         print(f"✅ Analysis stored for error {error_id}")
+        
+        # ✅ Send email for critical errors with high confidence
+        if analysis.get('confidence', 0) > 0.7:
+            print(f"🔍 DEBUG: High confidence analysis ({analysis.get('confidence', 0)}), checking for email notification")
+            
+            try:
+                # Get project owner's email
+                project_result = await db.execute(
+                    select(Project).where(Project.id == error.project_id)
+                )
+                project = project_result.scalar_one_or_none()
+                
+                if project:
+                    print(f"🔍 DEBUG: Found project: {project.name} (ID: {project.id})")
+                    
+                    # Get the project owner
+                    user_result = await db.execute(
+                        select(User).where(User.id == project.owner_id)
+                    )
+                    owner = user_result.scalar_one_or_none()
+                    
+                    if owner:
+                        print(f"🔍 DEBUG: Found project owner: {owner.email}")
+                        
+                        # Check if user has email notifications enabled
+                        if hasattr(owner, 'email_notifications') and owner.email_notifications:
+                            print(f"📧 Sending email notification to {owner.email} for error {error_id}")
+                            
+                            # Send the email
+                            await email_service.send_error_alert(
+                                to_email=owner.email,
+                                error=error_dict,
+                                analysis=analysis,
+                                project_name=project.name,
+                            )
+                            print(f"✅ Email notification sent successfully to {owner.email}")
+                        else:
+                            print(f"ℹ️ User {owner.email} has email notifications disabled or field not set")
+                    else:
+                        print(f"⚠️ No owner found for project {project.id}")
+                else:
+                    print(f"⚠️ No project found for error {error_id}")
+                    
+            except Exception as email_error:
+                print(f"❌ Email notification error: {email_error}")
+                import traceback
+                traceback.print_exc()
+                # Don't fail the whole analysis if email fails
         
     except Exception as e:
         print(f"❌ Background analysis error: {e}")
