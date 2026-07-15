@@ -1,6 +1,6 @@
 import os
 from typing import Optional
-from resend import Resend 
+import resend
 from app.config import settings
 from app.email.templates import EmailTemplates
 
@@ -8,7 +8,9 @@ class EmailService:
     def __init__(self):
         self.client = None
         if settings.RESEND_API_KEY:
-            self.client = Resend(api_key=settings.RESEND_API_KEY)
+            # ✅ Fix: Set API key directly on the resend module
+            resend.api_key = settings.RESEND_API_KEY
+            self.client = True
             print("✅ Resend email service initialized")
         else:
             print("⚠️ RESEND_API_KEY not set. Email notifications disabled.")
@@ -71,12 +73,14 @@ class EmailService:
         )
         
         try:
-            response = await self.client.emails.send(
-                from_=settings.EMAIL_FROM or "FrankTech <alerts@franktechspace.dev>",
-                to=[to_email],
-                subject=f"🚨 FrankTech Alert: {error.get('type', 'Error')} - {error.get('message', '')[:50]}",
-                html=html_content,
-            )
+            # ✅ Fix: Use resend.emails.send directly
+            params = {
+                "from": settings.EMAIL_FROM or "FrankTech <alerts@franktechspace.dev>",
+                "to": [to_email],
+                "subject": f"🚨 FrankTech Alert: {error.get('type', 'Error')} - {error.get('message', '')[:50]}",
+                "html": html_content,
+            }
+            response = resend.Emails.send(params)
             print(f"✅ Email sent to {to_email} (ID: {response.get('id')})")
             return True
         except Exception as e:
@@ -89,13 +93,14 @@ class EmailService:
             return False
         
         try:
-            response = await self.client.emails.send(
-                from_=settings.EMAIL_FROM or "FrankTech <alerts@franktechspace.dev>",
-                to=[to_email],
-                subject="FrankTech - Email Test",
-                html=EmailTemplates.TEST_EMAIL.substitute(),
-            )
-            print(f"✅ Test email sent to {to_email}")
+            params = {
+                "from": settings.EMAIL_FROM or "FrankTech <alerts@franktechspace.dev>",
+                "to": [to_email],
+                "subject": "FrankTech - Email Test",
+                "html": EmailTemplates.TEST_EMAIL.substitute(),
+            }
+            response = resend.Emails.send(params)
+            print(f"✅ Test email sent to {to_email} (ID: {response.get('id')})")
             return True
         except Exception as e:
             print(f"❌ Failed to send test email: {e}")
