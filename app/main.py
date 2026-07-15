@@ -1,7 +1,7 @@
 ﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.routes import errors, auth, api_keys, github
+from app.routes import errors, auth, api_keys, github, email
 from app.database import engine, Base
 from app.config import settings
 from sqlalchemy import text
@@ -64,6 +64,7 @@ app.include_router(errors.router)
 app.include_router(auth.router)
 app.include_router(api_keys.router)
 app.include_router(github.router)
+app.include_router(email.router)
 
 @app.get("/")
 async def root():
