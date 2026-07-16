@@ -99,6 +99,49 @@ async def get_my_organization(
         ]
     }
 
+@router.get("/invites/validate")
+async def validate_invite(
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate an invite token and return invite details"""
+    
+    result = await db.execute(
+        select(OrganizationInvite).where(OrganizationInvite.token == token)
+    )
+    invite = result.scalar_one_or_none()
+    
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    
+    if invite.accepted_at:
+        raise HTTPException(status_code=400, detail="Invite already accepted")
+    
+    if invite.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invite has expired")
+    
+    org_result = await db.execute(
+        select(Organization).where(Organization.id == invite.organization_id)
+    )
+    org = org_result.scalar_one_or_none()
+    
+    inviter_result = await db.execute(
+        select(User).where(User.id == invite.invited_by)
+    )
+    inviter = inviter_result.scalar_one_or_none()
+    
+    return {
+        "valid": True,
+        "organization_name": org.name if org else "Unknown Organization",
+        "organization_id": invite.organization_id,
+        "invited_by_email": inviter.email if inviter else "Unknown",
+        "invited_by_name": inviter.full_name if inviter else "Unknown",
+        "role": invite.role,
+        "email": invite.email,
+        "expires_at": invite.expires_at,
+        "created_at": invite.created_at,
+    }
+
 @router.post("/invites")
 async def invite_user(
     data: InviteCreate,
