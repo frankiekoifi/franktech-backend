@@ -24,13 +24,10 @@ async def validate_api_key(api_key: str, db: AsyncSession):
     if not api_key_obj:
         return None
     
-    # Update last_used
     api_key_obj.last_used = datetime.utcnow()
-    # Increment error count
     api_key_obj.error_count = (api_key_obj.error_count or 0) + 1
     await db.commit()
     
-    # Get project
     project_result = await db.execute(
         select(Project).where(Project.id == api_key_obj.project_id)
     )
@@ -39,20 +36,17 @@ async def validate_api_key(api_key: str, db: AsyncSession):
 async def analyze_error_background(error_id: int, db: AsyncSession):
     """Background task to analyze error with AI"""
     try:
-        print(f"🔍 DEBUG: Starting analysis for error {error_id}")
-        print(f"🔍 DEBUG: AI enabled = {settings.ai_enabled}")
+        print(f"Starting analysis for error {error_id}")
         
-        # Get the error from database
         result = await db.execute(
             select(Error).where(Error.id == error_id)
         )
         error = result.scalar_one_or_none()
         
         if not error:
-            print(f"❌ Error {error_id} not found")
+            print(f"Error {error_id} not found")
             return
         
-        # Convert to dict for AI service
         error_dict = {
             "id": error.id,
             "type": error.type,
@@ -66,12 +60,8 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
             "extra_data": error.extra_data or {},
         }
         
-        # Run AI analysis
-        print(f"🔍 DEBUG: Calling analyze_error for error {error_id}")
         analysis = await analyze_error(error_dict)
-        print(f"🔍 DEBUG: Analysis result: {analysis}")
         
-        # Store analysis in database
         ai_analysis = AIAnalysis(
             error_id=error_id,
             root_cause=analysis.get("root_cause"),
@@ -82,68 +72,47 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
             analyzed_at=datetime.utcnow()
         )
         db.add(ai_analysis)
-        
-        # Update error with has_ai_analysis flag
         error.has_ai_analysis = True
-        
         await db.commit()
-        print(f"✅ Analysis stored for error {error_id}")
+        print(f"Analysis stored for error {error_id}")
         
-        # ✅ Send email for critical errors with high confidence
         if analysis.get('confidence', 0) > 0.7:
-            print(f"🔍 DEBUG: High confidence analysis ({analysis.get('confidence', 0)}), checking for email notification")
-            
             try:
-                # Get project owner's email
                 project_result = await db.execute(
                     select(Project).where(Project.id == error.project_id)
                 )
                 project = project_result.scalar_one_or_none()
                 
                 if project:
-                    print(f"🔍 DEBUG: Found project: {project.name} (ID: {project.id})")
-                    
-                    # Get the project owner
                     user_result = await db.execute(
                         select(User).where(User.id == project.owner_id)
                     )
                     owner = user_result.scalar_one_or_none()
                     
-                    if owner:
-                        print(f"🔍 DEBUG: Found project owner: {owner.email}")
-                        
-                        # Check if user has email notifications enabled
-                        if hasattr(owner, 'email_notifications') and owner.email_notifications:
-                            print(f"📧 Sending email notification to {owner.email} for error {error_id}")
-                            
-                            # Send the email
-                            await email_service.send_error_alert(
-                                to_email=owner.email,
-                                error=error_dict,
-                                analysis=analysis,
-                                project_name=project.name,
-                            )
-                            print(f"✅ Email notification sent successfully to {owner.email}")
-                        else:
-                            print(f"ℹ️ User {owner.email} has email notifications disabled or field not set")
+                    if owner and hasattr(owner, 'email_notifications') and owner.email_notifications:
+                        await email_service.send_error_alert(
+                            to_email=owner.email,
+                            error=error_dict,
+                            analysis=analysis,
+                            project_name=project.name,
+                        )
+                        print(f"Email notification sent to {owner.email}")
                     else:
-                        print(f"⚠️ No owner found for project {project.id}")
+                        print(f"User {owner.email if owner else 'Unknown'} has email notifications disabled")
                 else:
-                    print(f"⚠️ No project found for error {error_id}")
+                    print(f"No project found for error {error_id}")
                     
             except Exception as email_error:
-                print(f"❌ Email notification error: {email_error}")
+                print(f"Email notification error: {email_error}")
                 import traceback
                 traceback.print_exc()
-                # Don't fail the whole analysis if email fails
         
     except Exception as e:
-        print(f"❌ Background analysis error: {e}")
+        print(f"Background analysis error: {e}")
         import traceback
         traceback.print_exc()
         await db.rollback()
         
-        # Store failed analysis
         try:
             ai_analysis = AIAnalysis(
                 error_id=error_id,
@@ -155,7 +124,7 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
             db.add(ai_analysis)
             await db.commit()
         except Exception as inner_e:
-            print(f"❌ Failed to store failure: {inner_e}")
+            print(f"Failed to store failure: {inner_e}")
 
 @router.post("/")
 async def ingest_error(
@@ -166,41 +135,30 @@ async def ingest_error(
 ):
     """Store error - accepts either JWT token or API key"""
     try:
-        print(f"🔍 DEBUG: POST /api/v1/errors called")
-        print(f"🔍 DEBUG: AI Provider = {settings.ai_provider}")
-        print(f"🔍 DEBUG: AI enabled = {settings.ai_enabled}")
-        
         project = None
         user_id = None
         auth_method = None
         
-        # Check for API Key header (SDK)
         api_key_header = request.headers.get("X-API-Key") if request else None
         
         if api_key_header:
-            print(f"🔍 DEBUG: API Key provided: {api_key_header[:20]}...")
             project = await validate_api_key(api_key_header, db)
             if project:
                 auth_method = "api_key"
-                print(f"🔑 Authenticated via API key for project: {project.id}")
         
-        # If no project from API key, try Authorization header (JWT)
         if not project:
             auth_header = request.headers.get("Authorization") if request else None
             if auth_header and auth_header.startswith("Bearer "):
                 token = auth_header.replace("Bearer ", "")
-                print(f"🔍 DEBUG: JWT token provided")
                 
                 try:
                     user = await get_current_user(token, db)
                     if user:
-                        # Get user's default project
                         project_result = await db.execute(
                             select(Project).where(Project.owner_id == user.id)
                         )
                         project = project_result.scalar_one_or_none()
                         if not project:
-                            # Create default project
                             project = Project(
                                 name="Default Project",
                                 slug="default-project",
@@ -211,18 +169,15 @@ async def ingest_error(
                             await db.flush()
                         user_id = user.id
                         auth_method = "jwt"
-                        print(f"👤 Authenticated via JWT for user: {user.email}")
                 except Exception as e:
-                    print(f"⚠️ JWT validation failed: {e}")
+                    print(f"JWT validation failed: {e}")
         
         if not project:
-            print("❌ No valid authentication found")
             raise HTTPException(
                 status_code=401,
                 detail="Invalid or missing authentication"
             )
         
-        # Create error
         db_error = Error(
             project_id=project.id,
             type=error.type,
@@ -245,14 +200,8 @@ async def ingest_error(
         await db.commit()
         await db.refresh(db_error)
         
-        print(f"✅ Error {db_error.id} stored in database")
-        
-        # Trigger AI analysis
         if settings.ai_enabled:
-            print(f"🔍 DEBUG: Adding background task for error {db_error.id}")
             background_tasks.add_task(analyze_error_background, db_error.id, db)
-        else:
-            print(f"⚠️ AI disabled, skipping analysis for error {db_error.id}")
         
         return {
             "id": db_error.id,
@@ -265,7 +214,7 @@ async def ingest_error(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         await db.rollback()
@@ -282,7 +231,6 @@ async def get_errors(
 ):
     """Get all errors with filters"""
     try:
-        # Build query
         query = select(Error).where(Error.project_id.in_(
             select(Project.id).where(Project.owner_id == current_user.id)
         ))
@@ -293,13 +241,11 @@ async def get_errors(
         if status:
             query = query.where(Error.status == status)
         
-        # Order by created_at descending with pagination
         query = query.order_by(desc(Error.created_at)).limit(limit).offset(offset)
         
         result = await db.execute(query)
         errors = result.scalars().all()
         
-        # Get total count
         count_query = select(func.count()).select_from(Error).where(Error.project_id.in_(
             select(Project.id).where(Project.owner_id == current_user.id)
         ))
@@ -313,7 +259,6 @@ async def get_errors(
         total_result = await db.execute(count_query)
         total = total_result.scalar()
         
-        # Convert to dict
         result = []
         for error in errors:
             error_dict = {
@@ -357,7 +302,6 @@ async def get_error(
 ):
     """Get a single error by ID"""
     try:
-        # Get error with project check
         result = await db.execute(
             select(Error).where(Error.id == error_id).where(
                 Error.project_id.in_(
@@ -405,7 +349,6 @@ async def get_error_analysis(
 ):
     """Get AI analysis for a specific error"""
     try:
-        # First check if error exists and user has access
         error_result = await db.execute(
             select(Error).where(Error.id == error_id).where(
                 Error.project_id.in_(
@@ -418,7 +361,6 @@ async def get_error_analysis(
         if not error:
             raise HTTPException(status_code=404, detail="Error not found")
         
-        # Get analysis
         result = await db.execute(
             select(AIAnalysis)
             .where(AIAnalysis.error_id == error_id)
