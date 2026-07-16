@@ -5,6 +5,29 @@ from app.database import Base
 
 # ============ SQLAlchemy Models ============
 
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255))
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    github_token = Column(String(500), nullable=True)
+    github_username = Column(String(255), nullable=True)
+    github_repo = Column(String(255), nullable=True)
+    github_connected_at = Column(DateTime, nullable=True)
+    email_notifications = Column(Boolean, default=True)
+    role = Column(String(50), default="member")
+    
+    organization = relationship("Organization", foreign_keys=[organization_id], back_populates="users")
+    owned_organizations = relationship("Organization", foreign_keys="Organization.owner_id", back_populates="owner")
+    projects = relationship("Project", back_populates="owner")
+
+
 class Organization(Base):
     __tablename__ = "organizations"
     
@@ -12,10 +35,10 @@ class Organization(Base):
     name = Column(String(255), nullable=False)
     slug = Column(String(255), unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     
     owner = relationship("User", foreign_keys=[owner_id], back_populates="owned_organizations")
-    users = relationship("User", back_populates="organization")
+    users = relationship("User", foreign_keys="User.organization_id", back_populates="organization")
     projects = relationship("Project", back_populates="organization")
     invites = relationship("OrganizationInvite", back_populates="organization")
 
@@ -35,30 +58,6 @@ class OrganizationInvite(Base):
     
     organization = relationship("Organization", back_populates="invites")
     inviter = relationship("User", foreign_keys=[invited_by])
-
-
-class User(Base):
-    __tablename__ = "users"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    hashed_password = Column(String(255), nullable=False)
-    full_name = Column(String(255))
-    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    github_token = Column(String(500), nullable=True)
-    github_username = Column(String(255), nullable=True)
-    github_repo = Column(String(255), nullable=True)
-    github_connected_at = Column(DateTime, nullable=True)
-    email_notifications = Column(Boolean, default=True)
-    
-    role = Column(String(50), default="member")  # owner, admin, member, viewer
-    
-    organization = relationship("Organization", back_populates="users")
-    projects = relationship("Project", back_populates="owner")
-    owned_organizations = relationship("Organization", foreign_keys=[Organization.owner_id], back_populates="owner")
 
 
 class Project(Base):
