@@ -165,5 +165,6 @@ async def get_me(current_user: User = Depends(get_current_user)):
         email=current_user.email,
         full_name=current_user.full_name,
         organization_id=current_user.organization_id,
-        created_at=current_user.created_at
+        created_at=current_user.created_at,
+        email_notifications=current_user.email_notifications
     )

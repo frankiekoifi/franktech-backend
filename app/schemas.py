@@ -57,6 +57,7 @@ class UserResponse(BaseModel):
     full_name: Optional[str] = None
     organization_id: Optional[int] = None
     created_at: datetime
+    email_notifications: bool = True
 
 class TokenResponse(BaseModel):
     access_token: str
