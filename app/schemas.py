@@ -87,3 +87,25 @@ class APIKeyListResponse(BaseModel):
     last_used: Optional[datetime] = None
     is_active: bool
     error_count: int
+
+class OrganizationCreate(BaseModel):
+    name: str
+    slug: str
+
+class OrganizationResponse(BaseModel):
+    id: int
+    name: str
+    slug: str
+    owner_id: int
+    created_at: datetime
+
+class InviteCreate(BaseModel):
+    email: EmailStr
+    role: Optional[str] = "member"
+
+class InviteResponse(BaseModel):
+    id: int
+    email: str
+    role: str
+    invite_link: str
+    expires_at: datetime

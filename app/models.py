@@ -12,9 +12,29 @@ class Organization(Base):
     name = Column(String(255), nullable=False)
     slug = Column(String(255), unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     
+    owner = relationship("User", foreign_keys=[owner_id], back_populates="owned_organizations")
     users = relationship("User", back_populates="organization")
     projects = relationship("Project", back_populates="organization")
+    invites = relationship("OrganizationInvite", back_populates="organization")
+
+
+class OrganizationInvite(Base):
+    __tablename__ = "organization_invites"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    email = Column(String(255), nullable=False)
+    role = Column(String(50), default="member")
+    token = Column(String(255), unique=True, nullable=False)
+    invited_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    accepted_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    organization = relationship("Organization", back_populates="invites")
+    inviter = relationship("User", foreign_keys=[invited_by])
 
 
 class User(Base):
@@ -32,11 +52,13 @@ class User(Base):
     github_username = Column(String(255), nullable=True)
     github_repo = Column(String(255), nullable=True)
     github_connected_at = Column(DateTime, nullable=True)
-
     email_notifications = Column(Boolean, default=True)
+    
+    role = Column(String(50), default="member")  # owner, admin, member, viewer
     
     organization = relationship("Organization", back_populates="users")
     projects = relationship("Project", back_populates="owner")
+    owned_organizations = relationship("Organization", foreign_keys=[Organization.owner_id], back_populates="owner")
 
 
 class Project(Base):
