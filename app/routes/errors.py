@@ -76,6 +76,7 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
         await db.commit()
         print(f"Analysis stored for error {error_id}")
         
+        # Send email for high-confidence fixes
         if analysis.get('confidence', 0) > 0.7:
             try:
                 project_result = await db.execute(
@@ -84,21 +85,32 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
                 project = project_result.scalar_one_or_none()
                 
                 if project:
+                    # ✅ Explicit column selection - only load what we need
                     user_result = await db.execute(
-                        select(User).where(User.id == project.owner_id)
+                        select(User.id, User.email, User.email_notifications)
+                        .where(User.id == project.owner_id)
                     )
-                    owner = user_result.scalar_one_or_none()
+                    owner = user_result.first()
                     
-                    if owner and hasattr(owner, 'email_notifications') and owner.email_notifications:
-                        await email_service.send_error_alert(
-                            to_email=owner.email,
-                            error=error_dict,
-                            analysis=analysis,
-                            project_name=project.name,
-                        )
-                        print(f"Email notification sent to {owner.email}")
+                    if owner:
+                        owner_email = owner.email
+                        owner_notifications = owner.email_notifications
+                        
+                        print(f"Found project owner: {owner_email}")
+                        print(f"Email notifications: {owner_notifications}")
+                        
+                        if owner_notifications:
+                            await email_service.send_error_alert(
+                                to_email=owner_email,
+                                error=error_dict,
+                                analysis=analysis,
+                                project_name=project.name,
+                            )
+                            print(f"Email notification sent to {owner_email}")
+                        else:
+                            print(f"User {owner_email} has email notifications disabled")
                     else:
-                        print(f"User {owner.email if owner else 'Unknown'} has email notifications disabled")
+                        print(f"No owner found for project {project.id}")
                 else:
                     print(f"No project found for error {error_id}")
                     
