@@ -7,29 +7,26 @@ from app.database import get_db
 from app.models import User, Organization, OrganizationInvite, Project
 from app.utils.auth import get_current_active_user
 from app.schemas import OrganizationCreate, OrganizationResponse, InviteCreate, InviteResponse
+from app.services.email_service import email_service
+from app.config import settings
 
 router = APIRouter(prefix="/api/v1/organizations", tags=["Organizations"])
 
-# ============ Create Organization ============
 @router.post("/")
 async def create_organization(
     data: OrganizationCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Create a new organization"""
-    # Check if user already has an organization
     if current_user.organization_id:
         raise HTTPException(status_code=400, detail="You already belong to an organization")
     
-    # Check if slug exists
     existing = await db.execute(
         select(Organization).where(Organization.slug == data.slug)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Organization slug already taken")
     
-    # Create organization
     org = Organization(
         name=data.name,
         slug=data.slug,
@@ -39,13 +36,11 @@ async def create_organization(
     db.add(org)
     await db.flush()
     
-    # Update user
     current_user.organization_id = org.id
     current_user.role = "owner"
     await db.commit()
     await db.refresh(current_user)
     
-    # Create default project
     project = Project(
         name="My Project",
         slug="my-project",
@@ -64,13 +59,11 @@ async def create_organization(
         "created_at": org.created_at
     }
 
-# ============ Get Organization ============
 @router.get("/me")
 async def get_my_organization(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Get current user's organization"""
     if not current_user.organization_id:
         return None
     
@@ -82,7 +75,6 @@ async def get_my_organization(
     if not org:
         return None
     
-    # Get members count
     members_result = await db.execute(
         select(User).where(User.organization_id == org.id)
     )
@@ -107,22 +99,18 @@ async def get_my_organization(
         ]
     }
 
-# ============ Invite User ============
 @router.post("/invites")
 async def invite_user(
     data: InviteCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Invite a user to the organization"""
     if not current_user.organization_id:
         raise HTTPException(status_code=400, detail="You are not in an organization")
     
-    # Check if user has permission (owner or admin)
     if current_user.role not in ["owner", "admin"]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
-    # Check if email already in organization
     existing_member = await db.execute(
         select(User).where(
             User.email == data.email,
@@ -132,7 +120,6 @@ async def invite_user(
     if existing_member.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="User already in organization")
     
-    # Check if invite already exists
     existing_invite = await db.execute(
         select(OrganizationInvite).where(
             OrganizationInvite.email == data.email,
@@ -143,7 +130,12 @@ async def invite_user(
     if existing_invite.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Invite already pending")
     
-    # Create invite
+    org_result = await db.execute(
+        select(Organization).where(Organization.id == current_user.organization_id)
+    )
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "FrankTech Team"
+    
     token = secrets.token_urlsafe(32)
     invite = OrganizationInvite(
         organization_id=current_user.organization_id,
@@ -158,8 +150,70 @@ async def invite_user(
     await db.commit()
     await db.refresh(invite)
     
-    # TODO: Send email with invite link
     invite_link = f"https://monitor.franktechspace.dev/accept-invite?token={token}"
+    
+    if email_service.client:
+        try:
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <title>You've been invited to FrankTech</title>
+                <style>
+                    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8fafc; padding: 20px; }}
+                    .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; padding: 30px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }}
+                    .header {{ border-bottom: 2px solid #f1f5f9; padding-bottom: 20px; margin-bottom: 20px; }}
+                    .logo {{ font-size: 24px; font-weight: bold; color: #0f172a; }}
+                    .logo span {{ color: #06b6d4; }}
+                    .button {{ display: inline-block; background: #06b6d4; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; margin-top: 16px; }}
+                    .button:hover {{ background: #0891b2; }}
+                    .footer {{ margin-top: 20px; padding-top: 20px; border-top: 2px solid #f1f5f9; color: #64748b; font-size: 14px; text-align: center; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <div class="logo">🚀 <span>FrankTech</span> Intelligence</div>
+                    </div>
+                    
+                    <h2>You've Been Invited! 🎉</h2>
+                    <p style="color: #475569; font-size: 16px;">
+                        <strong>{current_user.full_name or current_user.email}</strong> has invited you to join the organization
+                        <strong>"{org_name}"</strong> on FrankTech Intelligence.
+                    </p>
+                    
+                    <div style="margin: 24px 0;">
+                        <p style="color: #475569; font-size: 14px;">
+                            <strong>Role:</strong> {data.role or 'member'}
+                        </p>
+                        <p style="color: #475569; font-size: 14px;">
+                            <strong>Expires:</strong> {invite.expires_at.strftime('%B %d, %Y')}
+                        </p>
+                    </div>
+                    
+                    <a href="{invite_link}" class="button">Accept Invitation →</a>
+                    
+                    <p style="color: #64748b; font-size: 14px; margin-top: 24px;">
+                        If you don't have a FrankTech account yet, you'll be prompted to create one.
+                    </p>
+                    
+                    <div class="footer">
+                        <p>This invitation was sent from FrankTech Intelligence.</p>
+                        <p style="font-size: 12px;">If you didn't expect this invitation, you can safely ignore this email.</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            await email_service.send_email(
+                to_email=data.email,
+                subject=f"You've been invited to join {org_name} on FrankTech",
+                html_content=html_content
+            )
+        except Exception as e:
+            print(f"Failed to send invite email: {e}")
     
     return {
         "id": invite.id,
@@ -169,19 +223,16 @@ async def invite_user(
         "expires_at": invite.expires_at
     }
 
-# ============ Accept Invite ============
 @router.post("/invites/accept")
 async def accept_invite(
     data: dict,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Accept an organization invite"""
     token = data.get("token")
     if not token:
         raise HTTPException(status_code=400, detail="Token required")
     
-    # Find invite
     invite_result = await db.execute(
         select(OrganizationInvite).where(
             OrganizationInvite.token == token,
@@ -193,15 +244,12 @@ async def accept_invite(
     if not invite:
         raise HTTPException(status_code=400, detail="Invalid or expired invite")
     
-    # Check expiry
     if invite.expires_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Invite expired")
     
-    # Check email matches
     if invite.email != current_user.email:
         raise HTTPException(status_code=400, detail="Email does not match invite")
     
-    # Accept invite
     invite.accepted_at = datetime.utcnow()
     current_user.organization_id = invite.organization_id
     current_user.role = invite.role
@@ -209,17 +257,14 @@ async def accept_invite(
     
     return {"message": "Invite accepted successfully"}
 
-# ============ Leave Organization ============
 @router.post("/leave")
 async def leave_organization(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Leave the current organization"""
     if not current_user.organization_id:
         raise HTTPException(status_code=400, detail="You are not in an organization")
     
-    # Check if user is the owner
     org_result = await db.execute(
         select(Organization).where(Organization.id == current_user.organization_id)
     )

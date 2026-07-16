@@ -8,12 +8,30 @@ class EmailService:
     def __init__(self):
         self.client = None
         if settings.RESEND_API_KEY:
-            # ✅ Fix: Set API key directly on the resend module
             resend.api_key = settings.RESEND_API_KEY
             self.client = True
             print("✅ Resend email service initialized")
         else:
             print("⚠️ RESEND_API_KEY not set. Email notifications disabled.")
+
+    async def send_email(self, to_email: str, subject: str, html_content: str) -> bool:
+        """Send a generic email"""
+        if not self.client:
+            return False
+        
+        try:
+            params = {
+                "from": settings.EMAIL_FROM or "FrankTech <alerts@franktechspace.dev>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_content,
+            }
+            response = resend.Emails.send(params)
+            print(f"✅ Email sent to {to_email} (ID: {response.get('id')})")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to send email: {e}")
+            return False
 
     async def send_error_alert(
         self,
@@ -27,7 +45,6 @@ class EmailService:
         if not self.client:
             return False
         
-        # Get severity class for styling
         severity = error.get('severity', 'error').lower()
         severity_class = {
             'critical': 'severity-critical',
@@ -35,16 +52,13 @@ class EmailService:
             'warning': 'severity-warning',
         }.get(severity, 'severity-error')
         
-        # Format time
         from datetime import datetime
         time_str = datetime.utcnow().strftime("%B %d, %Y at %I:%M %p UTC")
         
-        # Prepare stack trace
         stack_trace = error.get('stack_trace', 'No stack trace available')
         if stack_trace and len(stack_trace) > 500:
             stack_trace = stack_trace[:500] + "...\n[truncated]"
         
-        # Prepare fix content
         fix_content = ""
         if analysis and analysis.get('suggested_fix'):
             fix_content = f"""
@@ -58,7 +72,6 @@ class EmailService:
             </div>
             """
         
-        # Build email
         html_content = EmailTemplates.ERROR_ALERT.substitute(
             error_type=error.get('type', 'Error'),
             error_message=error.get('message', 'Unknown error'),
@@ -73,7 +86,6 @@ class EmailService:
         )
         
         try:
-            # ✅ Fix: Use resend.emails.send directly
             params = {
                 "from": settings.EMAIL_FROM or "FrankTech <alerts@franktechspace.dev>",
                 "to": [to_email],
@@ -106,5 +118,4 @@ class EmailService:
             print(f"❌ Failed to send test email: {e}")
             return False
 
-# Singleton instance
 email_service = EmailService()
