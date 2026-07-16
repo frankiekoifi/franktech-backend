@@ -32,6 +32,8 @@ class User(Base):
     github_username = Column(String(255), nullable=True)
     github_repo = Column(String(255), nullable=True)
     github_connected_at = Column(DateTime, nullable=True)
+
+    email_notifications = Column(Boolean, default=True)
     
     organization = relationship("Organization", back_populates="users")
     projects = relationship("Project", back_populates="owner")
