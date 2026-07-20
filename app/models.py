@@ -145,6 +145,28 @@ class AIAnalysis(Base):
     
     error = relationship("Error", back_populates="ai_analysis")
 
+class PerformanceMetric(Base):
+    __tablename__ = "performance_metrics"
+    
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"))
+    
+    type = Column(String)  
+    url = Column(String, nullable=True)
+    method = Column(String, nullable=True)
+    duration = Column(Float)
+    status = Column(Integer, nullable=True)
+    
+    metrics = Column(JSON, nullable=True)  
+    
+    environment = Column(String)
+    release_version = Column(String, nullable=True)
+    user_id = Column(String, nullable=True)
+    user_email = Column(String, nullable=True)
+    
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
