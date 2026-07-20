@@ -1,12 +1,11 @@
-# app/routers/performance.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from datetime import datetime, timedelta
+from typing import List, Dict
 from app.database import get_db
 from app.models import PerformanceMetric, Project, User
 from app.utils.auth import get_current_user
-from typing import List, Dict
 
 router = APIRouter(prefix="/api/v1/performance", tags=["Performance"])
 
@@ -38,7 +37,7 @@ async def ingest_performance_metrics(
             release_version=metric.get('release_version'),
             user_id=metric.get('user_id'),
             user_email=metric.get('user_email'),
-            timestamp=datetime.fromtimestamp(metric.get('timestamp', datetime.utcnow().timestamp()))
+            timestamp=datetime.fromtimestamp(metric.get('timestamp', datetime.utcnow().timestamp()) / 1000)
         )
         db.add(db_metric)
     
@@ -52,7 +51,6 @@ async def get_api_metrics(
     current_user: User = Depends(get_current_user)
 ):
     """Get API performance metrics"""
-    # Parse time range
     if time_range == "1h":
         since = datetime.utcnow() - timedelta(hours=1)
     elif time_range == "6h":
@@ -64,7 +62,6 @@ async def get_api_metrics(
     else:
         since = datetime.utcnow() - timedelta(hours=24)
     
-    # Get metrics
     result = await db.execute(
         select(PerformanceMetric)
         .where(
@@ -74,11 +71,10 @@ async def get_api_metrics(
             PerformanceMetric.type == "api",
             PerformanceMetric.timestamp >= since
         )
-        .order_by(PerformanceMetric.timestamp.desc())
+        .order_by(desc(PerformanceMetric.timestamp))
     )
     metrics = result.scalars().all()
     
-    # Calculate averages
     durations = [m.duration for m in metrics if m.duration]
     avg_duration = sum(durations) / len(durations) if durations else 0
     
