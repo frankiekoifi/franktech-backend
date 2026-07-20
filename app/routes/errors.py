@@ -5,14 +5,17 @@ import json
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 from app.database import get_db
-from app.models import Error, AIAnalysis, Project, APIKey, User
+from app.models import Error, AIAnalysis, Project, APIKey, User, AuditLog
 from app.schemas import ErrorCreate, AIAnalysisResponse
 from app.services.ai_service import analyze_error
 from app.services.email_service import email_service
 from app.config import settings
 from app.utils.auth import get_current_user
+from app.utils.sanitize import sanitize_error_payload
+from app.utils.audit import log_action
 
 router = APIRouter(prefix="/api/v1/errors", tags=["errors"])
+
 
 async def validate_api_key(api_key: str, db: AsyncSession):
     """Validate API key and return project"""
@@ -32,6 +35,7 @@ async def validate_api_key(api_key: str, db: AsyncSession):
         select(Project).where(Project.id == api_key_obj.project_id)
     )
     return project_result.scalar_one_or_none()
+
 
 async def analyze_error_background(error_id: int, db: AsyncSession):
     """Background task to analyze error with AI"""
@@ -60,7 +64,11 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
             "extra_data": error.extra_data or {},
         }
         
-        analysis = await analyze_error(error_dict)
+        analysis = await analyze_error(
+            error_dict,
+            log_action=log_action,
+            db=db
+        )
         
         ai_analysis = AIAnalysis(
             error_id=error_id,
@@ -85,7 +93,6 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
                 project = project_result.scalar_one_or_none()
                 
                 if project:
-                    # ✅ Explicit column selection - only load what we need
                     user_result = await db.execute(
                         select(User.id, User.email, User.email_notifications)
                         .where(User.id == project.owner_id)
@@ -105,6 +112,18 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
                                 error=error_dict,
                                 analysis=analysis,
                                 project_name=project.name,
+                            )
+                            await log_action(
+                                db=db,
+                                user_id=owner.id,
+                                project_id=error.project_id,
+                                action="email_sent",
+                                details={
+                                "to_email": owner_email,
+                                "error_id": error_id,
+                                "confidence": analysis.get('confidence', 0),
+                                "subject": f"Error Alert: {error.type} - {project.name}"
+                                }
                             )
                             print(f"Email notification sent to {owner_email}")
                         else:
@@ -138,6 +157,7 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
         except Exception as inner_e:
             print(f"Failed to store failure: {inner_e}")
 
+
 @router.post("/")
 async def ingest_error(
     error: ErrorCreate,
@@ -150,13 +170,30 @@ async def ingest_error(
         project = None
         user_id = None
         auth_method = None
+        api_key_id = None
         
+        # --- Step 1: Sanitize the payload ---
+        error_dict = error.dict()
+        sanitized_payload = sanitize_error_payload(error_dict)
+        
+        # --- Step 2: Handle user_email based on config ---
+        if not settings.store_user_email:
+            sanitized_payload["user_email"] = None
+        
+        # --- Step 3: Authentication ---
         api_key_header = request.headers.get("X-API-Key") if request else None
         
         if api_key_header:
             project = await validate_api_key(api_key_header, db)
             if project:
                 auth_method = "api_key"
+                # Get the API key ID for tracking
+                result = await db.execute(
+                    select(APIKey).where(APIKey.key == api_key_header)
+                )
+                api_key_obj = result.scalar_one_or_none()
+                if api_key_obj:
+                    api_key_id = api_key_obj.id
         
         if not project:
             auth_header = request.headers.get("Authorization") if request else None
@@ -166,6 +203,7 @@ async def ingest_error(
                 try:
                     user = await get_current_user(token, db)
                     if user:
+                        # Get or create default project
                         project_result = await db.execute(
                             select(Project).where(Project.owner_id == user.id)
                         )
@@ -179,10 +217,16 @@ async def ingest_error(
                             )
                             db.add(project)
                             await db.flush()
+                        
                         user_id = user.id
                         auth_method = "jwt"
+                        
+                        # ✅ Track JWT usage counter
+                        user.total_errors_ingested = (user.total_errors_ingested or 0) + 1
+                        await db.commit()
                 except Exception as e:
                     print(f"JWT validation failed: {e}")
+                    raise HTTPException(status_code=401, detail="Invalid JWT token")
         
         if not project:
             raise HTTPException(
@@ -190,20 +234,21 @@ async def ingest_error(
                 detail="Invalid or missing authentication"
             )
         
+        # --- Step 4: Create error with sanitized data ---
         db_error = Error(
             project_id=project.id,
-            type=error.type,
-            message=error.message,
-            stack_trace=error.stack_trace,
-            severity=error.severity,
-            url=error.url,
-            line_no=error.line_no,
-            col_no=error.col_no,
-            user_id=error.user_id,
-            user_email=error.user_email,
-            environment=error.environment or "production",
-            release_version=error.release_version,
-            extra_data=error.extra_data or {},
+            type=sanitized_payload.get("type"),
+            message=sanitized_payload.get("message"),
+            stack_trace=sanitized_payload.get("stack_trace"),
+            severity=sanitized_payload.get("severity"),
+            url=sanitized_payload.get("url"),
+            line_no=sanitized_payload.get("line_no"),
+            col_no=sanitized_payload.get("col_no"),
+            user_id=sanitized_payload.get("user_id"),
+            user_email=sanitized_payload.get("user_email"),
+            environment=sanitized_payload.get("environment") or "production",
+            release_version=sanitized_payload.get("release_version"),
+            extra_data=sanitized_payload.get("extra_data") or {},
             status="unresolved",
             created_at=datetime.utcnow(),
             has_ai_analysis=False
@@ -212,6 +257,22 @@ async def ingest_error(
         await db.commit()
         await db.refresh(db_error)
         
+        # --- Step 5: Audit Log ---
+        await log_action(
+            db=db,
+            user_id=user_id,
+            project_id=project.id,
+            action="error_ingested",
+            details={
+                "error_id": db_error.id,
+                "auth_method": auth_method,
+                "error_type": db_error.type,
+                "severity": db_error.severity,
+                "api_key_id": api_key_id if auth_method == "api_key" else None
+            }
+        )
+        
+        # --- Step 6: Trigger AI analysis ---
         if settings.ai_enabled:
             background_tasks.add_task(analyze_error_background, db_error.id, db)
         
@@ -221,8 +282,10 @@ async def ingest_error(
             "analyzing": settings.ai_enabled,
             "message": "Error captured successfully",
             "auth_method": auth_method,
-            "project_id": project.id
+            "project_id": project.id,
+            "sanitized": True
         }
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -231,6 +294,7 @@ async def ingest_error(
         traceback.print_exc()
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/")
 async def get_errors(
@@ -300,11 +364,13 @@ async def get_errors(
             "limit": limit,
             "offset": offset
         }
+        
     except Exception as e:
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/{error_id}")
 async def get_error(
@@ -326,6 +392,19 @@ async def get_error(
         if not error:
             raise HTTPException(status_code=404, detail="Error not found")
         
+        # ✅ Audit Log for single error view
+        await log_action(
+            db=db,
+            user_id=current_user.id,
+            project_id=error.project_id,
+            action="error_viewed",
+            details={
+                "error_id": error_id,
+                "error_type": error.type,
+                "severity": error.severity
+            }
+        )
+        
         return {
             "id": error.id,
             "type": error.type,
@@ -345,6 +424,7 @@ async def get_error(
             "created_at": error.created_at,
             "fixed_at": error.fixed_at
         }
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -352,6 +432,7 @@ async def get_error(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/{error_id}/analysis", response_model=AIAnalysisResponse)
 async def get_error_analysis(
@@ -401,6 +482,7 @@ async def get_error_analysis(
             "analyzed_at": analysis.analyzed_at,
             "status": analysis.status
         }
+        
     except HTTPException:
         raise
     except Exception as e:

@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    store_user_email: bool = True
+    groq_model: str = "llama-3.3-70b-versatile"
+    openai_model: str = "gpt-4o-mini"
+    ai_timeout_seconds: int = 30
+    ai_max_retries: int = 1
+    FRONTEND_URL: str = "https://monitor.franktechspace.dev"
     
     # GitHub OAuth settings only
     GITHUB_CLIENT_ID: str = os.getenv("GITHUB_CLIENT_ID", "")

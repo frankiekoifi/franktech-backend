@@ -1,41 +1,48 @@
 from fastapi import APIRouter, HTTPException, Depends, status
 from datetime import datetime, timedelta
+from jose import JWTError, jwt
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models import User, Organization, Project
-from app.schemas import UserCreate, UserLogin, TokenResponse, UserResponse 
-from app.utils.auth import create_access_token, verify_password, get_password_hash, get_current_user
+from app.schemas import UserCreate, UserLogin, TokenResponse, UserResponse
+from app.utils.auth import (
+    create_access_token,
+    create_refresh_token,
+    get_password_hash,
+    verify_password,
+    get_current_user,
+    get_current_active_user,
+    logout_user,
+    generate_organization_slug
+)
 from app.config import settings
 from app.database import get_db
 from email_validator import validate_email, EmailNotValidError
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 @router.post("/register", response_model=TokenResponse)
 async def register(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    """Register a new user"""
     try:
-        # Validate email
         try:
             valid = validate_email(user_data.email)
             email = valid.email
         except EmailNotValidError:
             raise HTTPException(status_code=400, detail="Invalid email address")
         
-        # Check if user exists
         existing = await db.execute(
             select(User).where(User.email == email)
         )
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Email already registered")
         
-        # Hash password
         hashed_password = get_password_hash(user_data.password)
         
-        # Create organization if provided
         org = None
         if user_data.organization_name:
             existing_org = await db.execute(
@@ -43,7 +50,7 @@ async def register(
             )
             org = existing_org.scalar_one_or_none()
             if not org:
-                slug = user_data.organization_name.lower().replace(" ", "-")
+                slug = generate_organization_slug(user_data.organization_name)
                 org = Organization(
                     name=user_data.organization_name,
                     slug=slug,
@@ -52,7 +59,6 @@ async def register(
                 db.add(org)
                 await db.flush()
         
-        # Create user
         user = User(
             email=email,
             hashed_password=hashed_password,
@@ -64,7 +70,6 @@ async def register(
         db.add(user)
         await db.flush()
         
-        # Create default project
         project = Project(
             name="My Project",
             slug="my-project",
@@ -75,17 +80,25 @@ async def register(
         db.add(project)
         await db.commit()
         
-        # Refresh user to get relationships
         await db.refresh(user)
         
-        # Generate token
         access_token = create_access_token(
-            data={"sub": str(user.id)},
+            data={
+                "sub": str(user.id),
+                "email": user.email,
+                "role": user.role
+            },
             expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        refresh_token = create_refresh_token(
+            data={"sub": str(user.id)},
+            expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         )
         
         return TokenResponse(
             access_token=access_token,
+            refresh_token=refresh_token,
             user=UserResponse(
                 id=user.id,
                 email=user.email,
@@ -99,7 +112,7 @@ async def register(
     except Exception as e:
         print(f"Registration error: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -107,11 +120,9 @@ async def login(
     login_data: UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
-    """Login user"""
     try:
         print(f"Login attempt for: {login_data.email}")
         
-        # Find user
         result = await db.execute(
             select(User).where(User.email == login_data.email)
         )
@@ -124,7 +135,6 @@ async def login(
                 detail="Incorrect email or password"
             )
         
-        # Verify password
         if not verify_password(login_data.password, user.hashed_password):
             print(f"Invalid password for: {login_data.email}")
             raise HTTPException(
@@ -132,16 +142,25 @@ async def login(
                 detail="Incorrect email or password"
             )
         
-        # Generate token
         access_token = create_access_token(
-            data={"sub": str(user.id)},
+            data={
+                "sub": str(user.id),
+                "email": user.email,
+                "role": user.role
+            },
             expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        )
+        
+        refresh_token = create_refresh_token(
+            data={"sub": str(user.id)},
+            expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         )
         
         print(f"Login successful for: {login_data.email}")
         
         return TokenResponse(
             access_token=access_token,
+            refresh_token=refresh_token,
             user=UserResponse(
                 id=user.id,
                 email=user.email,
@@ -154,12 +173,66 @@ async def login(
         raise
     except Exception as e:
         print(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Login failed. Please try again.")
+
+
+@router.post("/logout")
+async def logout(
+    current_user: User = Depends(get_current_user),
+    token: str = Depends(oauth2_scheme)
+):
+    result = await logout_user(token)
+    return result
+
+
+@router.post("/refresh")
+async def refresh_token(
+    refresh_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid refresh token",
+    )
+    
+    try:
+        payload = jwt.decode(refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id_str: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        
+        if user_id_str is None or token_type != "refresh":
+            raise credentials_exception
+        
+        user_id = int(user_id_str)
+    except JWTError:
+        raise credentials_exception
+    except ValueError:
+        raise credentials_exception
+    
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if user is None:
+        raise credentials_exception
+    
+    new_access_token = create_access_token(
+        data={
+            "sub": str(user.id),
+            "email": user.email,
+            "role": user.role
+        },
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    
+    return {
+        "access_token": new_access_token,
+        "token_type": "bearer",
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    }
 
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user info"""
     return UserResponse(
         id=current_user.id,
         email=current_user.email,

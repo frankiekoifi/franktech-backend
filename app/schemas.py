@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime
+from pydantic import BaseModel
 
 # ============ Error Schemas ============
 
@@ -109,3 +110,6 @@ class InviteResponse(BaseModel):
     role: str
     invite_link: str
     expires_at: datetime
+
+class NotificationUpdate(BaseModel):
+    email_notifications: bool

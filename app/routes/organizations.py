@@ -3,14 +3,34 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from datetime import datetime, timedelta
 import secrets
+import re
+from enum import Enum
 from app.database import get_db
 from app.models import User, Organization, OrganizationInvite, Project
 from app.utils.auth import get_current_active_user
+from app.utils.audit import log_action
 from app.schemas import OrganizationCreate, OrganizationResponse, InviteCreate, InviteResponse
 from app.services.email_service import email_service
 from app.config import settings
 
 router = APIRouter(prefix="/api/v1/organizations", tags=["Organizations"])
+
+
+class RoleEnum(str, Enum):
+    OWNER = "owner"
+    ADMIN = "admin"
+    MEMBER = "member"
+    VIEWER = "viewer"
+
+
+def generate_organization_slug(name: str) -> str:
+    if not name:
+        return "organization"
+    slug = re.sub(r'[^a-zA-Z0-9\s-]', '', name.lower())
+    slug = re.sub(r'[-\s]+', '-', slug)
+    slug = slug.strip('-')
+    return slug
+
 
 @router.post("/")
 async def create_organization(
@@ -21,15 +41,17 @@ async def create_organization(
     if current_user.organization_id:
         raise HTTPException(status_code=400, detail="You already belong to an organization")
     
+    slug = generate_organization_slug(data.slug or data.name)
+    
     existing = await db.execute(
-        select(Organization).where(Organization.slug == data.slug)
+        select(Organization).where(Organization.slug == slug)
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Organization slug already taken")
     
     org = Organization(
         name=data.name,
-        slug=data.slug,
+        slug=slug,
         owner_id=current_user.id,
         created_at=datetime.utcnow()
     )
@@ -37,7 +59,7 @@ async def create_organization(
     await db.flush()
     
     current_user.organization_id = org.id
-    current_user.role = "owner"
+    current_user.role = RoleEnum.OWNER.value
     await db.commit()
     await db.refresh(current_user)
     
@@ -51,6 +73,14 @@ async def create_organization(
     db.add(project)
     await db.commit()
     
+    await log_action(
+        db=db,
+        user_id=current_user.id,
+        project_id=0,
+        action="organization_created",
+        details={"organization_id": org.id, "organization_name": org.name}
+    )
+    
     return {
         "id": org.id,
         "name": org.name,
@@ -58,6 +88,7 @@ async def create_organization(
         "owner_id": org.owner_id,
         "created_at": org.created_at
     }
+
 
 @router.get("/me")
 async def get_my_organization(
@@ -99,23 +130,22 @@ async def get_my_organization(
         ]
     }
 
+
 @router.get("/invites/validate")
 async def validate_invite(
     token: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Validate an invite token and return invite details"""
-    
     result = await db.execute(
-        select(OrganizationInvite).where(OrganizationInvite.token == token)
+        select(OrganizationInvite).where(
+            OrganizationInvite.token == token,
+            OrganizationInvite.accepted_at.is_(None)
+        )
     )
     invite = result.scalar_one_or_none()
     
     if not invite:
-        raise HTTPException(status_code=404, detail="Invite not found")
-    
-    if invite.accepted_at:
-        raise HTTPException(status_code=400, detail="Invite already accepted")
+        raise HTTPException(status_code=404, detail="Invite not found or already accepted")
     
     if invite.expires_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Invite has expired")
@@ -142,6 +172,7 @@ async def validate_invite(
         "created_at": invite.created_at,
     }
 
+
 @router.post("/invites")
 async def invite_user(
     data: InviteCreate,
@@ -151,8 +182,11 @@ async def invite_user(
     if not current_user.organization_id:
         raise HTTPException(status_code=400, detail="You are not in an organization")
     
-    if current_user.role not in ["owner", "admin"]:
+    if current_user.role not in [RoleEnum.OWNER.value, RoleEnum.ADMIN.value]:
         raise HTTPException(status_code=403, detail="Permission denied")
+    
+    if data.role and data.role not in [r.value for r in RoleEnum]:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {[r.value for r in RoleEnum]}")
     
     existing_member = await db.execute(
         select(User).where(
@@ -183,7 +217,7 @@ async def invite_user(
     invite = OrganizationInvite(
         organization_id=current_user.organization_id,
         email=data.email,
-        role=data.role or "member",
+        role=data.role or RoleEnum.MEMBER.value,
         token=token,
         invited_by=current_user.id,
         expires_at=datetime.utcnow() + timedelta(days=7),
@@ -193,7 +227,20 @@ async def invite_user(
     await db.commit()
     await db.refresh(invite)
     
-    invite_link = f"https://monitor.franktechspace.dev/accept-invite?token={token}"
+    invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={token}"
+    
+    await log_action(
+        db=db,
+        user_id=current_user.id,
+        project_id=0,
+        action="invite_sent",
+        details={
+            "invite_id": invite.id,
+            "email": data.email,
+            "role": data.role,
+            "organization_id": current_user.organization_id
+        }
+    )
     
     if email_service.client:
         try:
@@ -255,6 +302,18 @@ async def invite_user(
                 subject=f"You've been invited to join {org_name} on FrankTech",
                 html_content=html_content
             )
+            
+            await log_action(
+                db=db,
+                user_id=current_user.id,
+                project_id=0,
+                action="email_sent",
+                details={
+                    "invite_id": invite.id,
+                    "to_email": data.email,
+                    "subject": f"You've been invited to join {org_name} on FrankTech"
+                }
+            )
         except Exception as e:
             print(f"Failed to send invite email: {e}")
     
@@ -265,6 +324,7 @@ async def invite_user(
         "invite_link": invite_link,
         "expires_at": invite.expires_at
     }
+
 
 @router.post("/invites/accept")
 async def accept_invite(
@@ -298,7 +358,20 @@ async def accept_invite(
     current_user.role = invite.role
     await db.commit()
     
+    await log_action(
+        db=db,
+        user_id=current_user.id,
+        project_id=0,
+        action="invite_accepted",
+        details={
+            "invite_id": invite.id,
+            "organization_id": invite.organization_id,
+            "email": current_user.email
+        }
+    )
+    
     return {"message": "Invite accepted successfully"}
+
 
 @router.post("/leave")
 async def leave_organization(
@@ -318,5 +391,13 @@ async def leave_organization(
     
     current_user.organization_id = None
     await db.commit()
+    
+    await log_action(
+        db=db,
+        user_id=current_user.id,
+        project_id=0,
+        action="organization_left",
+        details={"organization_id": org.id, "organization_name": org.name}
+    )
     
     return {"message": "Left organization successfully"}

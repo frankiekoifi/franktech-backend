@@ -1,4 +1,4 @@
-﻿from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, JSON
+﻿from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, Float, ForeignKey, JSON, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base  
@@ -15,6 +15,7 @@ class User(Base):
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    total_errors_ingested = Column(Integer, default=0)
     
     github_token = Column(String(500), nullable=True)
     github_username = Column(String(255), nullable=True)
@@ -26,6 +27,7 @@ class User(Base):
     organization = relationship("Organization", foreign_keys=[organization_id], back_populates="users")
     owned_organizations = relationship("Organization", foreign_keys="Organization.owner_id", back_populates="owner")
     projects = relationship("Project", back_populates="owner")
+    audit_logs = relationship("AuditLog", foreign_keys="AuditLog.user_id", back_populates="user")
 
 
 class Organization(Base):
@@ -76,6 +78,7 @@ class Project(Base):
     owner = relationship("User", back_populates="projects")
     errors = relationship("Error", back_populates="project")
     api_keys = relationship("APIKey", back_populates="project")
+    audit_logs = relationship("AuditLog", foreign_keys="AuditLog.project_id", back_populates="project")
 
 
 class APIKey(Base):
@@ -139,3 +142,26 @@ class AIAnalysis(Base):
     fixed_at = Column(DateTime)
     
     error = relationship("Error", back_populates="ai_analysis")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True) 
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    action = Column(String(100), nullable=False)  
+    details = Column(JSON, nullable=True)
+    ip_address = Column(String(45), nullable=True)  
+    user_agent = Column(String(500), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User", foreign_keys=[user_id], back_populates="audit_logs")
+    project = relationship("Project", foreign_keys=[project_id], back_populates="audit_logs")
+    
+    __table_args__ = (
+        Index('idx_audit_logs_project_timestamp', 'project_id', 'timestamp'),
+        Index('idx_audit_logs_user_timestamp', 'user_id', 'timestamp'),
+        Index('idx_audit_logs_action', 'action'),
+        Index('idx_audit_logs_timestamp', 'timestamp'),
+    )
