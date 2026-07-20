@@ -125,6 +125,8 @@ class Error(Base):
     ai_analysis = relationship("AIAnalysis", back_populates="error", uselist=False)
     api_key_id = Column(Integer, ForeignKey("api_keys.id"), nullable=True)
     api_key = relationship("APIKey", back_populates="errors")
+    session_replay = Column(JSON, nullable=True)
+    has_session_replay = Column(Boolean, default=False)
 
 
 class AIAnalysis(Base):

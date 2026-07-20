@@ -1,7 +1,6 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel
 
 # ============ Error Schemas ============
 
@@ -18,6 +17,7 @@ class ErrorBase(BaseModel):
     environment: str = "production"
     release_version: Optional[str] = None
     extra_data: Optional[dict] = {}
+    session_replay: Optional[Dict[str, Any]] = None
 
 class ErrorCreate(ErrorBase):
     pass
@@ -28,6 +28,7 @@ class ErrorResponse(ErrorBase):
     created_at: datetime
     has_ai_analysis: bool
     fixed_at: Optional[datetime] = None
+    has_session_replay: bool
 
 # ============ AI Analysis Schemas ============
 
@@ -62,6 +63,7 @@ class UserResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: UserResponse
 

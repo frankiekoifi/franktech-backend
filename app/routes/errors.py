@@ -119,10 +119,10 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
                                 project_id=error.project_id,
                                 action="email_sent",
                                 details={
-                                "to_email": owner_email,
-                                "error_id": error_id,
-                                "confidence": analysis.get('confidence', 0),
-                                "subject": f"Error Alert: {error.type} - {project.name}"
+                                    "to_email": owner_email,
+                                    "error_id": error_id,
+                                    "confidence": analysis.get('confidence', 0),
+                                    "subject": f"Error Alert: {error.type} - {project.name}"
                                 }
                             )
                             print(f"Email notification sent to {owner_email}")
@@ -187,7 +187,6 @@ async def ingest_error(
             project = await validate_api_key(api_key_header, db)
             if project:
                 auth_method = "api_key"
-                # Get the API key ID for tracking
                 result = await db.execute(
                     select(APIKey).where(APIKey.key == api_key_header)
                 )
@@ -203,7 +202,6 @@ async def ingest_error(
                 try:
                     user = await get_current_user(token, db)
                     if user:
-                        # Get or create default project
                         project_result = await db.execute(
                             select(Project).where(Project.owner_id == user.id)
                         )
@@ -221,7 +219,6 @@ async def ingest_error(
                         user_id = user.id
                         auth_method = "jwt"
                         
-                        # ✅ Track JWT usage counter
                         user.total_errors_ingested = (user.total_errors_ingested or 0) + 1
                         await db.commit()
                 except Exception as e:
@@ -249,6 +246,8 @@ async def ingest_error(
             environment=sanitized_payload.get("environment") or "production",
             release_version=sanitized_payload.get("release_version"),
             extra_data=sanitized_payload.get("extra_data") or {},
+            session_replay=sanitized_payload.get("session_replay"),
+            has_session_replay=sanitized_payload.get("session_replay") is not None,
             status="unresolved",
             created_at=datetime.utcnow(),
             has_ai_analysis=False
@@ -268,7 +267,8 @@ async def ingest_error(
                 "auth_method": auth_method,
                 "error_type": db_error.type,
                 "severity": db_error.severity,
-                "api_key_id": api_key_id if auth_method == "api_key" else None
+                "api_key_id": api_key_id if auth_method == "api_key" else None,
+                "has_session_replay": db_error.has_session_replay
             }
         )
         
@@ -283,7 +283,8 @@ async def ingest_error(
             "message": "Error captured successfully",
             "auth_method": auth_method,
             "project_id": project.id,
-            "sanitized": True
+            "sanitized": True,
+            "has_session_replay": db_error.has_session_replay
         }
         
     except HTTPException:
@@ -353,6 +354,7 @@ async def get_errors(
                 "extra_data": error.extra_data or {},
                 "status": error.status,
                 "has_ai_analysis": error.has_ai_analysis,
+                "has_session_replay": error.has_session_replay,
                 "created_at": error.created_at,
                 "fixed_at": error.fixed_at
             }
@@ -392,7 +394,6 @@ async def get_error(
         if not error:
             raise HTTPException(status_code=404, detail="Error not found")
         
-        # ✅ Audit Log for single error view
         await log_action(
             db=db,
             user_id=current_user.id,
@@ -421,6 +422,7 @@ async def get_error(
             "extra_data": error.extra_data or {},
             "status": error.status,
             "has_ai_analysis": error.has_ai_analysis,
+            "has_session_replay": error.has_session_replay,
             "created_at": error.created_at,
             "fixed_at": error.fixed_at
         }
@@ -481,6 +483,45 @@ async def get_error_analysis(
             "confidence": analysis.confidence,
             "analyzed_at": analysis.analyzed_at,
             "status": analysis.status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{error_id}/replay")
+async def get_error_replay(
+    error_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Get session replay data for an error"""
+    try:
+        result = await db.execute(
+            select(Error).where(
+                Error.id == error_id,
+                Error.project_id.in_(
+                    select(Project.id).where(Project.owner_id == current_user.id)
+                )
+            )
+        )
+        error = result.scalar_one_or_none()
+        
+        if not error:
+            raise HTTPException(status_code=404, detail="Error not found")
+        
+        if not error.has_session_replay or not error.session_replay:
+            raise HTTPException(status_code=404, detail="No session replay available")
+        
+        return {
+            "error_id": error.id,
+            "replay_data": error.session_replay,
+            "has_replay": True
         }
         
     except HTTPException:
