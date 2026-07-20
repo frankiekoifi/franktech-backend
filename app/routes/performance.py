@@ -4,8 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from datetime import datetime, timedelta
 from app.database import get_db
-from app.models import PerformanceMetric, Project
+from app.models import PerformanceMetric, Project, User
 from app.utils.auth import get_current_user
+from typing import List, Dict
 
 router = APIRouter(prefix="/api/v1/performance", tags=["Performance"])
 
