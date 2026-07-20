@@ -62,6 +62,7 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
             "user_id": error.user_id,
             "user_email": error.user_email,
             "extra_data": error.extra_data or {},
+            "project_id": error.project_id,
         }
         
         analysis = await analyze_error(

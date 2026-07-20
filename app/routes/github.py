@@ -7,13 +7,14 @@ from datetime import datetime
 from app.database import get_db
 from app.models import User, Error, AIAnalysis, Project
 from app.utils.auth import get_current_active_user
+from app.utils.audit import log_action
 from app.config import settings
 from app.services.github_service import GitHubService
 
 router = APIRouter(prefix="/api/v1/github", tags=["GitHub"])
 github_service = GitHubService()
 
-# ============ STATUS ============
+
 @router.get("/status")
 async def get_status(current_user: User = Depends(get_current_active_user)):
     """Check GitHub connection status"""
@@ -24,7 +25,7 @@ async def get_status(current_user: User = Depends(get_current_active_user)):
         "connected_at": current_user.github_connected_at
     }
 
-# ============ AUTH - Returns OAuth URL (for frontend) ============
+
 @router.get("/auth")
 async def github_auth(current_user: User = Depends(get_current_active_user)):
     """Return GitHub OAuth URL"""
@@ -44,7 +45,7 @@ async def github_auth(current_user: User = Depends(get_current_active_user)):
     
     return {"auth_url": auth_url}
 
-# ============ CONNECT (Direct Redirect) ============
+
 @router.get("/connect")
 async def github_connect(current_user: User = Depends(get_current_active_user)):
     """Initiate GitHub OAuth - redirects to GitHub"""
@@ -62,8 +63,8 @@ async def github_connect(current_user: User = Depends(get_current_active_user)):
         f"&state={state}"
     )
     
-    # Redirect to GitHub
     return RedirectResponse(url=auth_url)
+
 
 @router.get("/callback")
 async def github_callback(
@@ -73,7 +74,6 @@ async def github_callback(
 ):
     """GitHub OAuth callback"""
     try:
-        # Extract user ID
         user_id = None
         if state.startswith("user_"):
             user_id = int(state.split("_")[1])
@@ -83,7 +83,6 @@ async def github_callback(
                 url="https://monitor.franktechspace.dev/settings?error=invalid_state"
             )
         
-        # Get user
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         
@@ -92,7 +91,6 @@ async def github_callback(
                 url="https://monitor.franktechspace.dev/settings?error=user_not_found"
             )
         
-        # Exchange code for token
         token_data = await github_service.exchange_code_for_token(code)
         
         if not token_data.get("access_token"):
@@ -101,11 +99,8 @@ async def github_callback(
             )
         
         access_token = token_data["access_token"]
-        
-        # Get user info
         github_user = await github_service.get_user_info(access_token)
         
-        # Save to database
         user.github_token = access_token
         user.github_username = github_user.get("login")
         user.github_connected_at = datetime.utcnow()
@@ -121,7 +116,7 @@ async def github_callback(
             url="https://monitor.franktechspace.dev/settings?error=failed"
         )
 
-# ============ REPOSITORIES ============
+
 @router.get("/repos")
 async def get_repos(current_user: User = Depends(get_current_active_user)):
     """Get user's GitHub repositories"""
@@ -130,6 +125,7 @@ async def get_repos(current_user: User = Depends(get_current_active_user)):
     
     repos = await github_service.get_repositories(current_user.github_token)
     return repos
+
 
 @router.post("/repository")
 async def set_repository(
@@ -147,7 +143,7 @@ async def set_repository(
     
     return {"success": True, "repo": repo}
 
-# ============ DISCONNECT ============
+
 @router.post("/disconnect")
 async def disconnect(
     db: AsyncSession = Depends(get_db),
@@ -162,7 +158,7 @@ async def disconnect(
     
     return {"success": True}
 
-# ============ CREATE PR ============
+
 @router.post("/errors/{error_id}/create-pr")
 async def create_pr(
     error_id: int,
@@ -176,7 +172,6 @@ async def create_pr(
     if not current_user.github_repo:
         raise HTTPException(status_code=400, detail="Repository not selected")
     
-    # Get error
     error_result = await db.execute(
         select(Error).where(
             Error.id == error_id,
@@ -190,7 +185,6 @@ async def create_pr(
     if not error:
         raise HTTPException(status_code=404, detail="Error not found")
     
-    # Get analysis
     analysis_result = await db.execute(
         select(AIAnalysis)
         .where(AIAnalysis.error_id == error_id)
@@ -205,22 +199,36 @@ async def create_pr(
     if analysis.fix_pr_url:
         return {"success": True, "pr_url": analysis.fix_pr_url, "message": "PR already exists"}
     
-    # Create PR
     result = await github_service.create_fix_pr(
         repo=current_user.github_repo,
         token=current_user.github_token,
         username=current_user.github_username,
-        error={"id": error.id, "type": error.type, "message": error.message},
+        error={
+            "id": error.id,
+            "type": error.type,
+            "message": error.message,
+            "project_id": error.project_id,
+        },
         analysis={
             "root_cause": analysis.root_cause,
             "suggested_fix": analysis.suggested_fix,
             "confidence": analysis.confidence,
         },
+        log_action=log_action,
+        db=db,
+        user_id=current_user.id,
     )
     
     if result.get("success"):
         analysis.fix_pr_url = result.get("pr_url")
         await db.commit()
-        return {"success": True, "pr_url": result.get("pr_url"), "pr_number": result.get("pr_number")}
+        return {
+            "success": True,
+            "pr_url": result.get("pr_url"),
+            "pr_number": result.get("pr_number")
+        }
     else:
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to create PR"))
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("error", "Failed to create PR")
+        )
