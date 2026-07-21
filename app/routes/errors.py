@@ -85,7 +85,6 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
         await db.commit()
         print(f"Analysis stored for error {error_id}")
         
-        # Send email for high-confidence fixes
         if analysis.get('confidence', 0) > 0.7:
             try:
                 project_result = await db.execute(
@@ -166,22 +165,65 @@ async def ingest_error(
     db: AsyncSession = Depends(get_db),
     request: Request = None
 ):
-    """Store error - accepts either JWT token or API key"""
+    """
+    ## Ingest an Error
+
+    Captures an error from your application and triggers AI analysis.
+
+    ### Authentication
+    Use either:
+    - **X-API-Key** header (for SDKs)
+    - **Bearer** token (for dashboard users)
+
+    ### Request Body
+    ```json
+    {
+        "type": "TypeError",
+        "message": "Cannot read property 'x' of undefined",
+        "stack_trace": "...",
+        "severity": "error",
+        "environment": "production",
+        "user_id": "user-123",
+        "user_email": "user@example.com",
+        "release_version": "v1.2.3",
+        "url": "https://example.com/page",
+        "line_no": 42,
+        "col_no": 10,
+        "session_replay": {
+            "events": [...],
+            "startTimestamp": 1234567890,
+            "endTimestamp": 1234567890
+        },
+        "extra_data": {
+            "custom_field": "value"
+        }
+    }
+
+    ### Response
+    ```json
+    {
+        "id": 123,
+        "accepted": true,
+        "analyzing": true,
+        "message": "Error captured successfully",
+        "auth_method": "api_key",
+        "project_id": 1,
+        "sanitized": true,
+        "has_session_replay": true
+    }
+    """
     try:
         project = None
         user_id = None
         auth_method = None
         api_key_id = None
         
-        # --- Step 1: Sanitize the payload ---
         error_dict = error.dict()
         sanitized_payload = sanitize_error_payload(error_dict)
         
-        # --- Step 2: Handle user_email based on config ---
         if not settings.store_user_email:
             sanitized_payload["user_email"] = None
         
-        # --- Step 3: Authentication ---
         api_key_header = request.headers.get("X-API-Key") if request else None
         
         if api_key_header:
@@ -232,7 +274,6 @@ async def ingest_error(
                 detail="Invalid or missing authentication"
             )
         
-        # --- Step 4: Create error with sanitized data ---
         db_error = Error(
             project_id=project.id,
             type=sanitized_payload.get("type"),
@@ -257,7 +298,6 @@ async def ingest_error(
         await db.commit()
         await db.refresh(db_error)
         
-        # --- Step 5: Audit Log ---
         await log_action(
             db=db,
             user_id=user_id,
@@ -273,7 +313,6 @@ async def ingest_error(
             }
         )
         
-        # --- Step 6: Trigger AI analysis ---
         if settings.ai_enabled:
             background_tasks.add_task(analyze_error_background, db_error.id, db)
         
