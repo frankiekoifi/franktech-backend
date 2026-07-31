@@ -18,8 +18,11 @@ class User(Base):
     total_errors_ingested = Column(Integer, default=0)
     reset_token = Column(String, nullable=True)
     reset_token_expires = Column(DateTime, nullable=True)
+    is_email_verified = Column(Boolean, default=False)
     email_verification_token = Column(String, nullable=True)
     email_verification_expires = Column(DateTime, nullable=True)
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime, nullable=True)
     
     github_token = Column(String(500), nullable=True)
     github_username = Column(String(255), nullable=True)

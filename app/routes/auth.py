@@ -210,7 +210,6 @@ async def login(
         # If bcrypt fails, check if it's an old SHA256 hash
         if not password_valid and _is_sha256_hash(user.hashed_password):
             # Old SHA256 hash - force password reset
-            # Generate reset token automatically
             reset_token = secrets.token_urlsafe(32)
             user.reset_token = reset_token
             user.reset_token_expires = datetime.utcnow() + timedelta(hours=24)
@@ -425,3 +424,57 @@ async def get_me(current_user: User = Depends(get_current_user)):
         created_at=current_user.created_at,
         email_notifications=current_user.email_notifications
     )
+
+
+@router.post("/resend-verification")
+@limiter.limit("2/minute")
+async def resend_verification(
+    request: Request,
+    data: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    email = data.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    
+    try:
+        result = await db.execute(
+            select(User).where(User.email == email)
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            return {"message": "If that email exists, a verification link has been sent"}
+        
+        if user.is_email_verified:
+            return {"message": "Email already verified"}
+        
+        # Generate new verification token
+        verification_token = secrets.token_urlsafe(32)
+        user.email_verification_token = verification_token
+        user.email_verification_expires = datetime.utcnow() + timedelta(days=1)
+        await db.commit()
+        
+        # Send verification email
+        verification_link = f"{settings.FRONTEND_URL}/verify-email?token={verification_token}"
+        
+        if email_service.client:
+            try:
+                await email_service.send_email(
+                    to_email=email,
+                    subject="Verify your email - FrankTech Intelligence",
+                    html_content=f"""
+                    <h1>Verify Your Email</h1>
+                    <p>Click the link below to verify your email:</p>
+                    <a href="{verification_link}">Verify Email</a>
+                    <p>This link expires in 24 hours.</p>
+                    """
+                )
+            except Exception as e:
+                print(f"Failed to send verification email: {e}")
+        
+        return {"message": "If that email exists, a verification link has been sent"}
+        
+    except Exception as e:
+        print(f"Resend verification error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send verification email")
