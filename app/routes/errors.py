@@ -13,6 +13,7 @@ from app.config import settings
 from app.utils.auth import get_current_user
 from app.utils.sanitize import sanitize_error_payload
 from app.utils.audit import log_action
+from app.middleware.rate_limit import limiter
 
 router = APIRouter(prefix="/api/v1/errors", tags=["errors"])
 
@@ -159,11 +160,12 @@ async def analyze_error_background(error_id: int, db: AsyncSession):
 
 
 @router.post("/")
+@limiter.limit("100/minute")
 async def ingest_error(
+    request: Request,
     error: ErrorCreate,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    request: Request = None
+    db: AsyncSession = Depends(get_db)
 ):
     """
     ## Ingest an Error

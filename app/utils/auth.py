@@ -3,8 +3,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional
-import hashlib
-import secrets
+import bcrypt
 import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -26,16 +25,15 @@ def is_token_blacklisted(token: str) -> bool:
 
 
 def get_password_hash(password: str) -> str:
-    salt = secrets.token_hex(16)
-    hash_obj = hashlib.sha256((salt + password).encode())
-    return f"{salt}:{hash_obj.hexdigest()}"
+    """Hash password using bcrypt"""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode(), salt).decode()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against bcrypt hash"""
     try:
-        salt, hash_value = hashed_password.split(':')
-        hash_obj = hashlib.sha256((salt + plain_password).encode())
-        return hash_obj.hexdigest() == hash_value
+        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
     except Exception:
         return False
 

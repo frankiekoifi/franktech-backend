@@ -6,6 +6,8 @@ from app.routes import errors, auth, api_keys, github, email, users, organizatio
 from app.database import engine, Base
 from app.config import settings
 from sqlalchemy import text
+from app.middleware.rate_limit import limiter, rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 from app.models import User, Organization, Project, Error, AIAnalysis, APIKey
 
@@ -145,6 +147,8 @@ app.include_router(users.router)
 app.include_router(organizations.router)
 app.include_router(performance.router)
 app.include_router(legal.router)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 
 @app.get("/")

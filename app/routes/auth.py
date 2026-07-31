@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, Request
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer
@@ -19,12 +19,17 @@ from app.utils.auth import (
 from app.config import settings
 from app.database import get_db
 from email_validator import validate_email, EmailNotValidError
+from app.middleware.rate_limit import limiter
+from app.services.rate_limit_service import login_tracker
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
+
 @router.post("/register", response_model=TokenResponse)
+@limiter.limit("3/minute")
 async def register(
+    request: Request,
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
@@ -65,7 +70,8 @@ async def register(
             full_name=user_data.full_name,
             organization_id=org.id if org else None,
             created_at=datetime.utcnow(),
-            is_active=True
+            is_active=True,
+            is_email_verified=False
         )
         db.add(user)
         await db.flush()
@@ -116,12 +122,21 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("5/minute")
 async def login(
+    request: Request,
     login_data: UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
     try:
         print(f"Login attempt for: {login_data.email}")
+        
+        # Check brute force attempts
+        if not login_tracker.track_attempt(login_data.email):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed attempts. Please try again later."
+            )
         
         result = await db.execute(
             select(User).where(User.email == login_data.email)
@@ -135,12 +150,21 @@ async def login(
                 detail="Incorrect email or password"
             )
         
+        if not user.is_email_verified:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Please verify your email before logging in"
+            )
+        
         if not verify_password(login_data.password, user.hashed_password):
             print(f"Invalid password for: {login_data.email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
             )
+        
+        # Login successful - reset failed attempts
+        login_tracker.reset_attempts(login_data.email)
         
         access_token = create_access_token(
             data={

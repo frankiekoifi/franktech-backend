@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from datetime import datetime, timedelta
@@ -12,6 +12,7 @@ from app.utils.audit import log_action
 from app.schemas import OrganizationCreate, OrganizationResponse, InviteCreate, InviteResponse
 from app.services.email_service import email_service
 from app.config import settings
+from app.middleware.rate_limit import limiter
 
 router = APIRouter(prefix="/api/v1/organizations", tags=["Organizations"])
 
@@ -174,7 +175,9 @@ async def validate_invite(
 
 
 @router.post("/invites")
+@limiter.limit("10/minute")
 async def invite_user(
+    request: Request,
     data: InviteCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
