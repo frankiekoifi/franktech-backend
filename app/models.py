@@ -16,6 +16,10 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     total_errors_ingested = Column(Integer, default=0)
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime, nullable=True)
+    email_verification_token = Column(String, nullable=True)
+    email_verification_expires = Column(DateTime, nullable=True)
     
     github_token = Column(String(500), nullable=True)
     github_username = Column(String(255), nullable=True)

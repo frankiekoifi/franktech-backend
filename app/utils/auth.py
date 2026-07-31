@@ -4,6 +4,7 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional
 import bcrypt
+import hashlib
 import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -24,6 +25,25 @@ def is_token_blacklisted(token: str) -> bool:
     return token in _token_blacklist
 
 
+def _is_sha256_hash(hashed: str) -> bool:
+    """Check if a password hash is the old SHA256 format"""
+    try:
+        salt, hash_value = hashed.split(':')
+        return len(hash_value) == 64 and all(c in '0123456789abcdef' for c in hash_value.lower())
+    except:
+        return False
+
+
+def _verify_sha256_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against SHA256 hash (legacy)"""
+    try:
+        salt, hash_value = hashed_password.split(':')
+        hash_obj = hashlib.sha256((salt + plain_password).encode())
+        return hash_obj.hexdigest() == hash_value
+    except Exception:
+        return False
+
+
 def get_password_hash(password: str) -> str:
     """Hash password using bcrypt"""
     salt = bcrypt.gensalt()
@@ -31,11 +51,24 @@ def get_password_hash(password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify password against bcrypt hash"""
-    try:
-        return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
-    except Exception:
-        return False
+    """
+    Verify password against bcrypt hash with SHA256 fallback for migration.
+    
+    This allows users with old SHA256 hashes to still login during the migration period.
+    """
+    # Try bcrypt verification first (for new users)
+    if hashed_password.startswith('$2b$'):
+        try:
+            return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+        except Exception:
+            return False
+    
+    # Check if it's an old SHA256 hash
+    if _is_sha256_hash(hashed_password):
+        return _verify_sha256_password(plain_password, hashed_password)
+    
+    # Unknown hash format
+    return False
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

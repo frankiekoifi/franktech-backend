@@ -4,8 +4,9 @@ from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import secrets
 from app.models import User, Organization, Project
-from app.schemas import UserCreate, UserLogin, TokenResponse, UserResponse
+from app.schemas import UserCreate, UserLogin, TokenResponse, UserResponse, ForgotPasswordRequest, ResetPasswordRequest
 from app.utils.auth import (
     create_access_token,
     create_refresh_token,
@@ -14,13 +15,15 @@ from app.utils.auth import (
     get_current_user,
     get_current_active_user,
     logout_user,
-    generate_organization_slug
+    generate_organization_slug,
+    _is_sha256_hash
 )
 from app.config import settings
 from app.database import get_db
 from email_validator import validate_email, EmailNotValidError
 from app.middleware.rate_limit import limiter
 from app.services.rate_limit_service import login_tracker
+from app.services.email_service import email_service
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
@@ -64,6 +67,9 @@ async def register(
                 db.add(org)
                 await db.flush()
         
+        # Generate email verification token
+        verification_token = secrets.token_urlsafe(32)
+        
         user = User(
             email=email,
             hashed_password=hashed_password,
@@ -71,7 +77,9 @@ async def register(
             organization_id=org.id if org else None,
             created_at=datetime.utcnow(),
             is_active=True,
-            is_email_verified=False
+            is_email_verified=False,
+            email_verification_token=verification_token,
+            email_verification_expires=datetime.utcnow() + timedelta(days=1)
         )
         db.add(user)
         await db.flush()
@@ -87,6 +95,23 @@ async def register(
         await db.commit()
         
         await db.refresh(user)
+        
+        # Send verification email
+        verification_link = f"{settings.FRONTEND_URL}/verify-email?token={verification_token}"
+        if email_service.client:
+            try:
+                await email_service.send_email(
+                    to_email=email,
+                    subject="Verify your email - FrankTech Intelligence",
+                    html_content=f"""
+                    <h1>Welcome to FrankTech!</h1>
+                    <p>Please verify your email by clicking the link below:</p>
+                    <a href="{verification_link}">Verify Email</a>
+                    <p>This link expires in 24 hours.</p>
+                    """
+                )
+            except Exception as e:
+                print(f"Failed to send verification email: {e}")
         
         access_token = create_access_token(
             data={
@@ -121,6 +146,30 @@ async def register(
         raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
 
 
+@router.get("/verify-email")
+async def verify_email(
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(User).where(
+            User.email_verification_token == token,
+            User.email_verification_expires > datetime.utcnow()
+        )
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+    
+    user.is_email_verified = True
+    user.email_verification_token = None
+    user.email_verification_expires = None
+    await db.commit()
+    
+    return {"message": "Email verified successfully. You can now log in."}
+
+
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def login(
@@ -131,7 +180,6 @@ async def login(
     try:
         print(f"Login attempt for: {login_data.email}")
         
-        # Check brute force attempts
         if not login_tracker.track_attempt(login_data.email):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -156,14 +204,30 @@ async def login(
                 detail="Please verify your email before logging in"
             )
         
-        if not verify_password(login_data.password, user.hashed_password):
+        # Check password with bcrypt
+        password_valid = verify_password(login_data.password, user.hashed_password)
+        
+        # If bcrypt fails, check if it's an old SHA256 hash
+        if not password_valid and _is_sha256_hash(user.hashed_password):
+            # Old SHA256 hash - force password reset
+            # Generate reset token automatically
+            reset_token = secrets.token_urlsafe(32)
+            user.reset_token = reset_token
+            user.reset_token_expires = datetime.utcnow() + timedelta(hours=24)
+            await db.commit()
+            
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Your password needs to be reset. Please use the 'Forgot Password' feature."
+            )
+        
+        if not password_valid:
             print(f"Invalid password for: {login_data.email}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
             )
         
-        # Login successful - reset failed attempts
         login_tracker.reset_attempts(login_data.email)
         
         access_token = create_access_token(
@@ -198,6 +262,102 @@ async def login(
     except Exception as e:
         print(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed. Please try again.")
+
+
+@router.post("/forgot-password")
+@limiter.limit("3/minute")
+async def forgot_password(
+    request: Request,
+    data: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    email = data.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    
+    try:
+        result = await db.execute(
+            select(User).where(User.email == email)
+        )
+        user = result.scalar_one_or_none()
+        
+        # Always return success even if user not found (security best practice)
+        if not user:
+            return {"message": "If that email exists, a reset link has been sent"}
+        
+        # Generate reset token
+        reset_token = secrets.token_urlsafe(32)
+        user.reset_token = reset_token
+        user.reset_token_expires = datetime.utcnow() + timedelta(hours=1)
+        await db.commit()
+        
+        # Send reset email
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
+        
+        if email_service.client:
+            try:
+                await email_service.send_email(
+                    to_email=email,
+                    subject="Reset your password - FrankTech Intelligence",
+                    html_content=f"""
+                    <h1>Reset Your Password</h1>
+                    <p>Click the link below to reset your password:</p>
+                    <a href="{reset_link}">Reset Password</a>
+                    <p>This link expires in 1 hour.</p>
+                    <p>If you didn't request this, please ignore this email.</p>
+                    """
+                )
+            except Exception as e:
+                print(f"Failed to send reset email: {e}")
+        
+        return {"message": "If that email exists, a reset link has been sent"}
+        
+    except Exception as e:
+        print(f"Forgot password error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process request")
+
+
+@router.post("/reset-password")
+@limiter.limit("3/minute")
+async def reset_password(
+    request: Request,
+    data: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    token = data.get("token")
+    new_password = data.get("new_password")
+    
+    if not token:
+        raise HTTPException(status_code=400, detail="Reset token is required")
+    if not new_password or len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    try:
+        result = await db.execute(
+            select(User).where(
+                User.reset_token == token,
+                User.reset_token_expires > datetime.utcnow()
+            )
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+        
+        # Hash with bcrypt
+        user.hashed_password = get_password_hash(new_password)
+        user.reset_token = None
+        user.reset_token_expires = None
+        await db.commit()
+        
+        return {"message": "Password reset successfully. You can now log in with your new password."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Reset password error: {e}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to reset password")
 
 
 @router.post("/logout")
